@@ -1,0 +1,158 @@
+/**
+ * Styles for block_servermon
+ *
+ * @package   block_servermon
+ * @copyright 2026
+ * @license   http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
+ */
+
+.block-servermon {
+    font-family: inherit;
+    font-size: 0.85rem;
+}
+
+/* --- Individual metric card --- */
+.bsm-metric {
+    margin-bottom: 1.1rem;
+    padding-bottom: 1.1rem;
+    border-bottom: 1px solid rgba(128, 128, 128, 0.15);
+}
+.bsm-metric:last-of-type {
+    border-bottom: none;
+}
+
+.bsm-metric-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 0.4rem;
+}
+
+.bsm-metric-label {
+    font-weight: 600;
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    opacity: 0.7;
+}
+
+.bsm-metric-value {
+    font-size: 1.3rem;
+    font-weight: 700;
+    line-height: 1;
+}
+
+/* --- Progress bar --- */
+.bsm-bar-track {
+    height: 5px;
+    background: rgba(128, 128, 128, 0.2);
+    border-radius: 2px;
+    overflow: hidden;
+    margin-bottom: 0.35rem;
+}
+
+.bsm-bar-fill {
+    height: 100%;
+    border-radius: 2px;
+    transition: width 0.4s ease;
+    min-width: 2px;
+}
+
+/* --- Footer row under bar --- */
+.bsm-metric-footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.bsm-detail {
+    font-size: 0.73rem;
+    opacity: 0.6;
+    flex: 1;
+}
+
+.bsm-unavail {
+    font-size: 0.73rem;
+    opacity: 0.5;
+    font-style: italic;
+}
+
+.bsm-badge {
+    font-size: 0.62rem;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    border: 1px solid;
+    padding: 0.1rem 0.4rem;
+    white-space: nowrap;
+    border-radius: 2px;
+}
+
+/* --- Info table --- */
+.bsm-info-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 0.75rem;
+    font-size: 0.78rem;
+}
+
+.bsm-info-table tr {
+    border-top: 1px solid rgba(128, 128, 128, 0.12);
+}
+
+.bsm-info-table tr:first-child {
+    border-top: none;
+}
+
+.bsm-info-table td {
+    padding: 0.35rem 0.1rem;
+    vertical-align: top;
+}
+
+.bsm-info-key {
+    opacity: 0.55;
+    width: 45%;
+    padding-right: 0.5rem;
+}
+
+.bsm-info-val {
+    font-weight: 500;
+    word-break: break-word;
+}
+
+.bsm-hosting-reason {
+    font-size: 0.68rem;
+    opacity: 0.55;
+    font-weight: 400;
+}
+
+/* --- Collapsible info section --- */
+.bsm-details {
+    margin-top: 0.75rem;
+    border-top: 1px solid rgba(128, 128, 128, 0.15);
+}
+
+.bsm-summary {
+    cursor: pointer;
+    padding: 0.5rem 0.1rem;
+    font-size: 0.75rem;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    opacity: 0.55;
+    list-style: none;
+    user-select: none;
+    transition: opacity 0.2s;
+}
+
+.bsm-summary::-webkit-details-marker {
+    display: none;
+}
+
+.bsm-summary:hover {
+    opacity: 1;
+}
+
+.bsm-details[open] .bsm-summary {
+    opacity: 0.8;
+    margin-bottom: 0.25rem;
+}
