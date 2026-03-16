@@ -15,7 +15,7 @@
 // along with Moodle.  If not, see <http://www.gnu.org/licenses/>.
 
 /**
- * Version details for block_servermon.
+ * Capability definitions for block_servermon.
  *
  * @package   block_servermon
  * @copyright 2026 Vernon Spain
@@ -24,8 +24,26 @@
 
 defined('MOODLE_INTERNAL') || die();
 
-$plugin->component = 'block_servermon';
-$plugin->version   = 2026031601;   // Bumped: clean zip repackage.
-$plugin->requires  = 2024100700;   // Moodle 5.0 minimum.
-$plugin->maturity  = MATURITY_STABLE;
-$plugin->release   = '1.0.2';
+$capabilities = [
+
+    // Allows adding this block to any page (site/course contexts).
+    'block/servermon:addinstance' => [
+        'riskbitmask'  => RISK_CONFIG,
+        'captype'      => 'write',
+        'contextlevel' => CONTEXT_BLOCK,
+        'archetypes'   => [
+            'manager' => CAP_ALLOW,
+        ],
+    ],
+
+    // Allows adding this block to a user's own Dashboard (My page).
+    'block/servermon:myaddinstance' => [
+        'riskbitmask'  => RISK_CONFIG,
+        'captype'      => 'write',
+        'contextlevel' => CONTEXT_SYSTEM,
+        'archetypes'   => [
+            'manager' => CAP_ALLOW,
+        ],
+    ],
+
+];

@@ -17,13 +17,15 @@
 /**
  * Server Monitor block for Moodle 5.x.
  *
- * Displays CPU load, RAM usage, and disk space on the admin Dashboard.
- * Visible to site administrators only.
+ * Displays CPU load, RAM usage, disk space, uptime and server info
+ * on the admin Dashboard. Visible to site administrators only.
  *
  * @package   block_servermon
  * @copyright 2026 Vernon Spain
  * @license   http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
+
+defined('MOODLE_INTERNAL') || die();
 
 /**
  * Block class for block_servermon.
@@ -33,6 +35,11 @@
  * @license   http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
 class block_servermon extends block_base {
+
+    // ---------------------------------------------------------------
+    // Moodle block lifecycle methods.
+    // ---------------------------------------------------------------
+
     /**
      * Initialise the block title.
      *
@@ -61,7 +68,7 @@ class block_servermon extends block_base {
     }
 
     /**
-     * This block is only applicable on My Dashboard.
+     * This block is only applicable on the My Dashboard page.
      *
      * @return array
      */
@@ -99,312 +106,33 @@ class block_servermon extends block_base {
         return $this->content;
     }
 
+    // ---------------------------------------------------------------
+    // Data collection.
+    // ---------------------------------------------------------------
+
     /**
      * Collect all server metrics and return as an associative array.
      *
      * @return array
      */
     private function collect_metrics(): array {
-        global $DB;
         $islinux = (strtoupper(substr(PHP_OS, 0, 3)) !== 'WIN');
         return [
-            'cpu'      => $this->get_cpu($islinux),
-            'ram'      => $this->get_ram($islinux),
-            'disk'     => $this->get_disk($islinux),
-            'uptime'   => $this->get_uptime($islinux),
-            'php'      => PHP_VERSION,
-            'os'       => PHP_OS,
-            'hostname' => gethostname() ?: 'unknown',
+            'cpu'       => $this->get_cpu($islinux),
+            'ram'       => $this->get_ram($islinux),
+            'disk'      => $this->get_disk($islinux),
+            'uptime'    => $this->get_uptime($islinux),
+            'php'       => PHP_VERSION,
+            'os'        => PHP_OS,
+            'hostname'  => gethostname() ?: 'unknown',
             'webserver' => $_SERVER['SERVER_SOFTWARE'] ?? 'unknown',
-            'time'     => userdate(time()),
-            'dbtype'   => $this->get_db_type($DB),
-            'hosting'  => $this->get_hosting_type($islinux),
+            'time'      => userdate(time()),
+            'hosting'   => $this->get_hosting_type($islinux),
         ];
     }
 
     /**
-     * Return a human-readable database type and version string.
-     *
-     * @param moodle_database $db The Moodle database object.
-     * @return string Database type and version.
-     */
-    private function get_db_type(\moodle_database $db): string {
-        $family  = $db->get_dbfamily();
-        $info    = $db->get_server_info();
-        $version = $info['version'] ?? '';
-
-        $labels = [
-            'mysql'    => 'MySQL / MariaDB',
-            'postgres' => 'PostgreSQL',
-            'mssql'    => 'Microsoft SQL Server',
-            'oracle'   => 'Oracle',
-            'sqlite'   => 'SQLite',
-        ];
-
-        $label = $labels[$family] ?? ucfirst($family);
-        return $version ? "{$label} {$version}" : $label;
-    }
-
-    /**
-     * Attempt to detect the server environment type.
-     *
-     * Uses a layered heuristic: first checks for known platform fingerprints
-     * (YunoHost, Plesk, cPanel etc.), then detects virtualisation type
-     * (KVM, Xen, LXC, container), then falls back to resource-based scoring.
-     * Results are always marked unconfirmed as PHP cannot definitively
-     * determine hosting type.
-     *
-     * @param bool $islinux Whether the server is running Linux.
-     * @return array Keys: label, reasons.
-     */
-    private function get_hosting_type(bool $islinux): array {
-        $signals = [];
-        $label   = '';
-
-        if (!$islinux) {
-            return ['label' => 'Windows Server (unconfirmed)', 'reasons' => 'Non-Linux OS detected.'];
-        }
-
-        // Layer 1: Known platform fingerprints.
-        // These give us a high-confidence environment label immediately.
-        // Multiple panels can coexist so we collect all matches.
-
-        if (is_dir('/etc/yunohost') || is_dir('/usr/share/yunohost')) {
-            $signals[] = 'YunoHost detected';
-            $label     = 'YunoHost / Self-hosted VPS (unconfirmed)';
-        }
-
-        if (is_dir('/etc/plesk') || is_readable('/usr/local/psa/version')) {
-            $signals[] = 'Plesk detected';
-            if ($label === '') {
-                $label = 'VPS or Dedicated with Plesk (unconfirmed)';
-            }
-        }
-
-        if (is_dir('/usr/local/cpanel') || is_readable('/etc/cpanel/cpanel.config')) {
-            $signals[] = 'cPanel detected';
-            if ($label === '') {
-                $label = 'Shared or VPS with cPanel (unconfirmed)';
-            }
-        }
-
-        if (is_readable('/etc/directadmin/directadmin.conf')) {
-            $signals[] = 'DirectAdmin detected';
-            if ($label === '') {
-                $label = 'Shared or VPS with DirectAdmin (unconfirmed)';
-            }
-        }
-
-        if (is_dir('/etc/webmin') || is_readable('/usr/share/webmin/version')) {
-            $signals[] = 'Webmin detected';
-            if ($label === '') {
-                $label = 'Self-managed Server with Webmin (unconfirmed)';
-            }
-        }
-
-        if (is_dir('/usr/local/ispconfig') || is_readable('/usr/local/ispconfig/server/lib/config.inc.php')) {
-            $signals[] = 'ISPConfig detected';
-            if ($label === '') {
-                $label = 'Shared or VPS with ISPConfig (unconfirmed)';
-            }
-        }
-
-        if (is_dir('/usr/local/vesta') || is_dir('/usr/local/hestia')) {
-            $panel     = is_dir('/usr/local/hestia') ? 'HestiaCP' : 'VestaCP';
-            $signals[] = $panel . ' detected';
-            if ($label === '') {
-                $label = 'VPS with ' . $panel . ' (unconfirmed)';
-            }
-        }
-
-        if (is_dir('/usr/local/cwpsrv') || is_readable('/usr/local/cwpsrv/conf/cwp.conf')) {
-            $signals[] = 'CentOS Web Panel (CWP) detected';
-            if ($label === '') {
-                $label = 'VPS with CWP (unconfirmed)';
-            }
-        }
-
-        if (is_dir('/opt/psa') || is_readable('/opt/psa/version')) {
-            $signals[] = 'Parallels/Virtuozzo detected';
-            if ($label === '') {
-                $label = 'Shared or VPS with Parallels (unconfirmed)';
-            }
-        }
-
-        // Layer 2: Cloud provider detection.
-        // Check DMI vendor strings and cloud-specific metadata paths.
-
-        $cloud = '';
-
-        if (is_readable('/sys/class/dmi/id/sys_vendor')) {
-            $vendor = strtolower(trim(file_get_contents('/sys/class/dmi/id/sys_vendor')));
-            if (strpos($vendor, 'amazon') !== false) {
-                $cloud = 'AWS';
-            } else if (strpos($vendor, 'microsoft') !== false) {
-                $cloud = 'Azure';
-            } else if (strpos($vendor, 'google') !== false) {
-                $cloud = 'Google Cloud';
-            } else if (strpos($vendor, 'digitalocean') !== false) {
-                $cloud = 'DigitalOcean';
-            } else if (strpos($vendor, 'hetzner') !== false) {
-                $cloud = 'Hetzner';
-            } else if (strpos($vendor, 'contabo') !== false) {
-                $cloud = 'Contabo';
-            } else if (strpos($vendor, 'vultr') !== false) {
-                $cloud = 'Vultr';
-            } else if (strpos($vendor, 'linode') !== false) {
-                $cloud = 'Linode / Akamai';
-            } else if (strpos($vendor, 'ovh') !== false) {
-                $cloud = 'OVH';
-            }
-        }
-
-        if ($cloud !== '') {
-            $signals[] = 'Cloud provider: ' . $cloud;
-            if ($label === '') {
-                $label = $cloud . ' VPS (unconfirmed)';
-            }
-        }
-
-        // Layer 3: Virtualisation and container type.
-        // Check DMI product name and CPU flags for hypervisor hints.
-
-        $virt = '';
-
-        if (is_readable('/sys/class/dmi/id/product_name')) {
-            $dmi = strtolower(trim(file_get_contents('/sys/class/dmi/id/product_name')));
-            if (strpos($dmi, 'kvm') !== false) {
-                $virt = 'KVM';
-            } else if (strpos($dmi, 'vmware') !== false) {
-                $virt = 'VMware';
-            } else if (strpos($dmi, 'virtualbox') !== false) {
-                $virt = 'VirtualBox';
-            } else if (strpos($dmi, 'bochs') !== false || strpos($dmi, 'qemu') !== false) {
-                $virt = 'QEMU/KVM';
-            } else if (strpos($dmi, 'xen') !== false) {
-                $virt = 'Xen';
-            } else if (strpos($dmi, 'hyper-v') !== false || strpos($dmi, 'hyperv') !== false) {
-                $virt = 'Hyper-V';
-            }
-        }
-
-        if ($virt === '' && is_readable('/proc/cpuinfo')) {
-            $cpuinfo = file_get_contents('/proc/cpuinfo');
-            if (strpos($cpuinfo, 'hypervisor') !== false) {
-                $virt = 'Hypervisor (type unknown)';
-            }
-        }
-
-        if ($virt === '' && is_readable('/proc/1/environ')) {
-            $env = @file_get_contents('/proc/1/environ');
-            if ($env !== false && strpos($env, 'container=') !== false) {
-                $virt = 'Container (LXC/Docker)';
-            }
-        }
-
-        if ($virt !== '') {
-            $signals[] = 'Virtualisation: ' . $virt;
-            if ($label === '') {
-                $label = 'VPS / Virtual Machine (unconfirmed)';
-            }
-        }
-
-        // Layer 4: Bare-metal chassis detection.
-        // DMI chassis type codes: 17=rack, 23=blade, 1=other (often bare metal).
-        // Only set label here if nothing else matched — avoids overriding VPS detection.
-
-        if ($label === '' && is_readable('/sys/class/dmi/id/chassis_type')) {
-            $chassis = (int) trim(file_get_contents('/sys/class/dmi/id/chassis_type'));
-            $chassislabels = [
-                1  => 'Other',
-                2  => 'Unknown',
-                17 => 'Rack Mount',
-                23 => 'Blade',
-                24 => 'Blade Enclosure',
-            ];
-            if (isset($chassislabels[$chassis])) {
-                $signals[] = 'Chassis type: ' . $chassislabels[$chassis];
-            }
-            if (in_array($chassis, [17, 23, 24])) {
-                $label = 'Likely Dedicated / Bare Metal Server (unconfirmed)';
-            }
-        }
-
-        // Layer 5: OS fingerprint.
-        // Adds OS detail to signals regardless of label.
-
-        if (is_readable('/etc/os-release')) {
-            preg_match('/PRETTY_NAME="([^"]+)"/', file_get_contents('/etc/os-release'), $osm);
-            if (!empty($osm[1])) {
-                $signals[] = $osm[1];
-            }
-        } else if (is_readable('/etc/debian_version')) {
-            $signals[] = 'Debian ' . trim(file_get_contents('/etc/debian_version'));
-        } else if (is_readable('/etc/redhat-release')) {
-            $signals[] = trim(file_get_contents('/etc/redhat-release'));
-        }
-
-        // Layer 6: Resource-based scoring (final fallback).
-        // Only sets the label if nothing above produced one.
-
-        $vpsscore = 0;
-
-        $cpucount = 1;
-        if (is_readable('/proc/cpuinfo')) {
-            preg_match_all('/^processor/m', file_get_contents('/proc/cpuinfo'), $m);
-            $cpucount = max(1, count($m[0]));
-        }
-        if ($cpucount >= 2) {
-            $vpsscore++;
-        }
-        $signals[] = $cpucount . ' CPU core' . ($cpucount > 1 ? 's' : '');
-
-        if (is_readable('/proc/meminfo')) {
-            preg_match('/MemTotal:\s+(\d+)\s+kB/', file_get_contents('/proc/meminfo'), $mt);
-            if (!empty($mt[1])) {
-                $rammb = (int) $mt[1] / 1024;
-                if ($rammb >= 900) {
-                    $vpsscore++;
-                    $signals[] = round($rammb / 1024, 1) . ' GB RAM';
-                } else {
-                    $signals[] = round($rammb) . ' MB RAM';
-                }
-            }
-        }
-
-        if (is_readable('/proc/net/dev')) {
-            $vpsscore++;
-        }
-
-        if (function_exists('posix_getpwuid') && function_exists('posix_geteuid')) {
-            $user     = posix_getpwuid(posix_geteuid());
-            $username = $user['name'] ?? '';
-            $sharedusers = ['nobody', 'apache', 'www-data', 'httpd'];
-            if ($username !== '') {
-                if (!in_array($username, $sharedusers)) {
-                    $vpsscore++;
-                }
-                $signals[] = 'Running as: ' . $username;
-            }
-        }
-
-        if ($label === '') {
-            if ($vpsscore >= 3) {
-                $label = 'Likely Dedicated Server (unconfirmed)';
-            } else if ($vpsscore >= 1) {
-                $label = 'Likely VPS or Shared Hosting (unconfirmed)';
-            } else {
-                $label = 'Likely Shared Hosting (unconfirmed)';
-            }
-        }
-
-        return [
-            'label'   => $label,
-            'reasons' => implode(', ', $signals),
-        ];
-    }
-
-    /**
+     * Read CPU load average from the OS.
      *
      * @param bool $islinux Whether the server is running Linux.
      * @return array Keys: pct, load1, load5, load15.
@@ -416,18 +144,22 @@ class block_servermon extends block_base {
             return $result;
         }
 
-        $load = sys_getloadavg();
-        $cpus = 1;
+        $load = @sys_getloadavg();
+        if (!$load) {
+            return $result;
+        }
 
+        $cores = 1;
         if (is_readable('/proc/cpuinfo')) {
-            preg_match_all('/^processor/m', file_get_contents('/proc/cpuinfo'), $m);
-            $cpus = max(1, count($m[0]));
+            $cpuinfo = file_get_contents('/proc/cpuinfo');
+            preg_match_all('/^processor\s*:/m', $cpuinfo, $matches);
+            $cores = max(1, count($matches[0]));
         }
 
         $result['load1']  = round($load[0], 2);
         $result['load5']  = round($load[1], 2);
         $result['load15'] = round($load[2], 2);
-        $result['pct']    = min(100, round(($load[0] / $cpus) * 100, 1));
+        $result['pct']    = round(($load[0] / $cores) * 100, 1);
 
         return $result;
     }
@@ -445,22 +177,22 @@ class block_servermon extends block_base {
             return $result;
         }
 
-        $info = file_get_contents('/proc/meminfo');
-        preg_match('/MemTotal:\s+(\d+)\s+kB/', $info, $mt);
-        preg_match('/MemAvailable:\s+(\d+)\s+kB/', $info, $ma);
+        $meminfo = file_get_contents('/proc/meminfo');
+        preg_match('/MemTotal:\s+(\d+)/i',     $meminfo, $mtotal);
+        preg_match('/MemAvailable:\s+(\d+)/i', $meminfo, $mavail);
 
-        if (!$mt || !$ma) {
+        if (!$mtotal || !$mavail) {
             return $result;
         }
 
-        $total = round($mt[1] / 1048576, 2);
-        $free  = round($ma[1] / 1048576, 2);
-        $used  = round($total - $free, 2);
+        $totalkb = (int) $mtotal[1];
+        $freekb  = (int) $mavail[1];
+        $usedkb  = $totalkb - $freekb;
 
-        $result['total'] = $total;
-        $result['free']  = $free;
-        $result['used']  = $used;
-        $result['pct']   = $total > 0 ? round(($used / $total) * 100, 1) : null;
+        $result['total'] = round($totalkb / 1048576, 2);
+        $result['free']  = round($freekb  / 1048576, 2);
+        $result['used']  = round($usedkb  / 1048576, 2);
+        $result['pct']   = $totalkb > 0 ? round(($usedkb / $totalkb) * 100, 1) : null;
 
         return $result;
     }
@@ -487,7 +219,7 @@ class block_servermon extends block_base {
         }
 
         $totalgb = round($total / 1073741824, 2);
-        $freegb  = round($free / 1073741824, 2);
+        $freegb  = round($free  / 1073741824, 2);
         $usedgb  = round($totalgb - $freegb, 2);
 
         $result['total'] = $totalgb;
@@ -508,12 +240,91 @@ class block_servermon extends block_base {
         if (!$islinux || !is_readable('/proc/uptime')) {
             return null;
         }
+
         $secs = (int) floatval(file_get_contents('/proc/uptime'));
-        $d = floor($secs / 86400);
-        $h = floor(($secs % 86400) / 3600);
-        $m = floor(($secs % 3600) / 60);
+        $d    = (int) floor($secs / 86400);
+        $h    = (int) floor(($secs % 86400) / 3600);
+        $m    = (int) floor(($secs % 3600) / 60);
+
         return "{$d}d {$h}h {$m}m";
     }
+
+    /**
+     * Guess whether the server is shared hosting, VPS, or dedicated.
+     *
+     * Uses heuristic signals — the label is always marked as unconfirmed.
+     *
+     * @param bool $islinux Whether the server is running Linux.
+     * @return array Keys: label (string), reasons (array of strings).
+     */
+    private function get_hosting_type(bool $islinux): array {
+        $score   = 0;
+        $reasons = [];
+
+        if (!$islinux) {
+            return ['label' => 'Windows Server (unconfirmed)', 'reasons' => []];
+        }
+
+        // CPU core count.
+        $cores = 1;
+        if (is_readable('/proc/cpuinfo')) {
+            $cpuinfo = file_get_contents('/proc/cpuinfo');
+            preg_match_all('/^processor\s*:/m', $cpuinfo, $matches);
+            $cores = max(1, count($matches[0]));
+        }
+        if ($cores >= 2) {
+            $score++;
+            $reasons[] = "{$cores} CPU cores visible";
+        }
+
+        // RAM threshold.
+        if (is_readable('/proc/meminfo')) {
+            $meminfo = file_get_contents('/proc/meminfo');
+            preg_match('/MemTotal:\s+(\d+)/i', $meminfo, $m);
+            if ($m) {
+                $rammb = (int) $m[1] / 1024;
+                if ($rammb >= 900) {
+                    $score++;
+                    $reasons[] = round($rammb / 1024, 1) . ' GB RAM';
+                }
+            }
+        }
+
+        // Network interfaces.
+        if (is_readable('/proc/net/dev')) {
+            $score++;
+            $reasons[] = '/proc/net/dev readable';
+        }
+
+        // Hostname file.
+        if (file_exists('/etc/hostname')) {
+            $score++;
+            $reasons[] = '/etc/hostname present';
+        }
+
+        // Process user.
+        if (function_exists('posix_getpwuid') && function_exists('posix_geteuid')) {
+            $user = posix_getpwuid(posix_geteuid());
+            if ($user && !in_array($user['name'], ['nobody', 'www-data', 'apache', 'nginx'])) {
+                $score++;
+                $reasons[] = 'Running as ' . $user['name'];
+            }
+        }
+
+        if ($score >= 3) {
+            $label = 'Likely VPS or Dedicated (unconfirmed)';
+        } else if ($score >= 1) {
+            $label = 'Likely Shared Hosting or small VPS (unconfirmed)';
+        } else {
+            $label = 'Likely Shared Hosting (unconfirmed)';
+        }
+
+        return ['label' => $label, 'reasons' => $reasons];
+    }
+
+    // ---------------------------------------------------------------
+    // Rendering.
+    // ---------------------------------------------------------------
 
     /**
      * Render the full block HTML from collected metrics.
@@ -524,8 +335,8 @@ class block_servermon extends block_base {
     private function render_block(array $m): string {
         $togglelabel = get_string('info_toggle', 'block_servermon');
         $html  = '<div class="block-servermon">';
-        $html .= $this->render_metric_row('cpu', $m['cpu']);
-        $html .= $this->render_metric_row('ram', $m['ram']);
+        $html .= $this->render_metric_row('cpu',  $m['cpu']);
+        $html .= $this->render_metric_row('ram',  $m['ram']);
         $html .= $this->render_metric_row('disk', $m['disk']);
         $html .= '<details class="bsm-details">';
         $html .= '<summary class="bsm-summary">' . $togglelabel . '</summary>';
@@ -547,7 +358,7 @@ class block_servermon extends block_base {
         $label  = get_string("{$type}_label", 'block_servermon');
         $colour = $this->status_colour($pct);
         $badge  = $this->status_badge($pct);
-        $barpct = $pct !== null ? $pct : 0;
+        $barpct = $pct !== null ? min($pct, 100) : 0;
 
         // Build detail line.
         $detail = '';
@@ -569,87 +380,98 @@ class block_servermon extends block_base {
             ? '<div class="bsm-unavail">' . get_string('unavailable', 'block_servermon') . '</div>'
             : '';
 
-        $valuedisplay = $pct !== null ? "{$pct}%" : '&mdash;';
+        $valuedisplay = $pct !== null
+            ? '<span class="bsm-pct">' . $pct . '%</span>'
+            : '';
 
-        return <<<HTML
-        <div class="bsm-metric">
-            <div class="bsm-metric-header">
-                <span class="bsm-metric-label">{$label}</span>
-                <span class="bsm-metric-value" style="color:{$colour}">{$valuedisplay}</span>
-            </div>
-            <div class="bsm-bar-track">
-                <div class="bsm-bar-fill" style="width:{$barpct}%;background:{$colour}"></div>
-            </div>
-            <div class="bsm-metric-footer">
-                <span class="bsm-detail">{$detail}{$unavailmsg}</span>
-                <span class="bsm-badge" style="color:{$colour};border-color:{$colour}">{$badge}</span>
-            </div>
-        </div>
-HTML;
+        $html  = '<div class="bsm-row">';
+        $html .= '<div class="bsm-row-header">';
+        $html .= '<span class="bsm-label">' . $label . '</span>';
+        $html .= '<span class="bsm-right">' . $valuedisplay . $badge . '</span>';
+        $html .= '</div>';
+
+        if ($pct !== null) {
+            $html .= '<div class="bsm-bar-track">';
+            $html .= '<div class="bsm-bar-fill bsm-' . $colour . '" style="width:' . $barpct . '%"></div>';
+            $html .= '</div>';
+        }
+
+        if ($detail) {
+            $html .= '<div class="bsm-detail">' . $detail . '</div>';
+        }
+
+        $html .= $unavailmsg;
+        $html .= '</div>';
+
+        return $html;
     }
 
     /**
-     * Render the server info table below the metric rows.
+     * Render the server info table section.
      *
      * @param array $m Metrics array from collect_metrics().
      * @return string HTML output.
      */
     private function render_info_table(array $m): string {
-        $hosting = $m['hosting'];
         $rows = [
-            get_string('uptime_label', 'block_servermon') => $m['uptime'] ?? get_string('unavailable', 'block_servermon'),
-            get_string('php_label', 'block_servermon') => htmlspecialchars($m['php']),
-            get_string('db_label', 'block_servermon') => htmlspecialchars($m['dbtype']),
-            get_string('hostname_label', 'block_servermon') => htmlspecialchars($m['hostname']),
+            get_string('uptime_label',    'block_servermon') => $m['uptime'] ?? get_string('unavailable', 'block_servermon'),
+            get_string('php_label',       'block_servermon') => htmlspecialchars($m['php']),
+            get_string('os_label',        'block_servermon') => htmlspecialchars($m['os']),
+            get_string('hostname_label',  'block_servermon') => htmlspecialchars($m['hostname']),
             get_string('webserver_label', 'block_servermon') => htmlspecialchars($m['webserver']),
-            get_string('hosting_label', 'block_servermon') => htmlspecialchars($hosting['label'])
-                . '<br><span class="bsm-hosting-reason">' . htmlspecialchars($hosting['reasons']) . '</span>',
+            get_string('hosting_label',   'block_servermon') => htmlspecialchars($m['hosting']['label'])
+                . ($m['hosting']['reasons']
+                    ? '<br><span class="bsm-hosting-reasons">'
+                        . implode(', ', array_map('htmlspecialchars', $m['hosting']['reasons']))
+                        . '</span>'
+                    : ''),
             get_string('timestamp_label', 'block_servermon') => htmlspecialchars($m['time']),
         ];
 
         $html = '<table class="bsm-info-table">';
-        foreach ($rows as $k => $v) {
-            $html .= "<tr><td class=\"bsm-info-key\">{$k}</td><td class=\"bsm-info-val\">{$v}</td></tr>";
+        foreach ($rows as $key => $val) {
+            $html .= '<tr>';
+            $html .= '<td class="bsm-info-key">' . $key . '</td>';
+            $html .= '<td class="bsm-info-val">' . $val . '</td>';
+            $html .= '</tr>';
         }
         $html .= '</table>';
+
         return $html;
     }
 
+    // ---------------------------------------------------------------
+    // Helpers.
+    // ---------------------------------------------------------------
+
     /**
-     * Return a hex colour string based on percentage used.
+     * Return a CSS colour class name based on the percentage value.
      *
-     * @param float|null $pct Percentage value, or null if unknown.
-     * @return string Hex colour code.
+     * @param float|null $pct Percentage value.
+     * @return string CSS class suffix: ok, moderate, high, or unknown.
      */
     private function status_colour(?float $pct): string {
         if ($pct === null) {
-            return '#94a3b8';
+            return 'unknown';
         }
-        if ($pct < 60) {
-            return '#22c55e';
+        if ($pct >= 80) {
+            return 'high';
         }
-        if ($pct < 80) {
-            return '#f59e0b';
+        if ($pct >= 60) {
+            return 'moderate';
         }
-        return '#ef4444';
+        return 'ok';
     }
 
     /**
-     * Return a localised status badge string based on percentage used.
+     * Return a status badge HTML string based on the percentage value.
      *
-     * @param float|null $pct Percentage value, or null if unknown.
-     * @return string Localised status label.
+     * @param float|null $pct Percentage value.
+     * @return string HTML badge element.
      */
     private function status_badge(?float $pct): string {
-        if ($pct === null) {
-            return get_string('status_unknown', 'block_servermon');
-        }
-        if ($pct < 60) {
-            return get_string('status_ok', 'block_servermon');
-        }
-        if ($pct < 80) {
-            return get_string('status_moderate', 'block_servermon');
-        }
-        return get_string('status_high', 'block_servermon');
+        $colour = $this->status_colour($pct);
+        $label  = get_string('status_' . $colour, 'block_servermon');
+        return '<span class="bsm-badge bsm-' . $colour . '">' . $label . '</span>';
     }
 }

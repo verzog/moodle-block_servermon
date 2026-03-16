@@ -1,77 +1,71 @@
 /**
- * Styles for block_servermon
+ * Styles for block_servermon.
  *
  * @package   block_servermon
- * @copyright 2026
+ * @copyright 2026 Vernon Spain
  * @license   http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
 
+/* --- Layout --- */
 .block-servermon {
-    font-family: inherit;
+    font-size: 0.82rem;
+    line-height: 1.4;
+}
+
+.bsm-row {
+    margin-bottom: 0.9rem;
+}
+
+.bsm-row-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.2rem;
+}
+
+.bsm-label {
+    font-weight: 600;
+    opacity: 0.85;
+}
+
+.bsm-right {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+}
+
+.bsm-pct {
+    font-weight: 700;
     font-size: 0.85rem;
 }
 
-/* --- Individual metric card --- */
-.bsm-metric {
-    margin-bottom: 1.1rem;
-    padding-bottom: 1.1rem;
-    border-bottom: 1px solid rgba(128, 128, 128, 0.15);
-}
-.bsm-metric:last-of-type {
-    border-bottom: none;
-}
-
-.bsm-metric-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: baseline;
-    margin-bottom: 0.4rem;
-}
-
-.bsm-metric-label {
-    font-weight: 600;
-    font-size: 0.8rem;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    opacity: 0.7;
-}
-
-.bsm-metric-value {
-    font-size: 1.3rem;
-    font-weight: 700;
-    line-height: 1;
+.bsm-detail {
+    font-size: 0.72rem;
+    opacity: 0.6;
+    margin-top: 0.15rem;
 }
 
 /* --- Progress bar --- */
 .bsm-bar-track {
-    height: 5px;
-    background: rgba(128, 128, 128, 0.2);
-    border-radius: 2px;
+    height: 6px;
+    background: rgba(128, 128, 128, 0.18);
+    border-radius: 3px;
     overflow: hidden;
-    margin-bottom: 0.35rem;
+    margin: 0.25rem 0;
 }
 
 .bsm-bar-fill {
     height: 100%;
-    border-radius: 2px;
-    transition: width 0.4s ease;
-    min-width: 2px;
+    border-radius: 3px;
+    transition: width 0.3s ease;
 }
 
-/* --- Footer row under bar --- */
-.bsm-metric-footer {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 0.5rem;
-}
+.bsm-bar-fill.bsm-ok       { background-color: #2ecc71; }
+.bsm-bar-fill.bsm-moderate { background-color: #f39c12; }
+.bsm-bar-fill.bsm-high     { background-color: #e74c3c; }
+.bsm-bar-fill.bsm-unknown  { background-color: #95a5a6; }
 
-.bsm-detail {
-    font-size: 0.73rem;
-    opacity: 0.6;
-    flex: 1;
-}
-
+/* --- Badges --- */
 .bsm-unavail {
     font-size: 0.73rem;
     opacity: 0.5;
@@ -81,18 +75,45 @@
 .bsm-badge {
     font-size: 0.62rem;
     font-weight: 700;
-    letter-spacing: 0.1em;
-    border: 1px solid;
+    letter-spacing: 0.08em;
+    border: 1px solid currentColor;
     padding: 0.1rem 0.4rem;
     white-space: nowrap;
     border-radius: 2px;
+}
+
+.bsm-badge.bsm-ok       { color: #27ae60; }
+.bsm-badge.bsm-moderate { color: #d68910; }
+.bsm-badge.bsm-high     { color: #c0392b; }
+.bsm-badge.bsm-unknown  { color: #7f8c8d; }
+
+/* --- Collapsible info section --- */
+.bsm-details {
+    margin-top: 0.5rem;
+}
+
+.bsm-summary {
+    font-size: 0.75rem;
+    opacity: 0.6;
+    cursor: pointer;
+    user-select: none;
+    list-style: none;
+    padding: 0.2rem 0;
+}
+
+.bsm-summary::-webkit-details-marker {
+    display: none;
+}
+
+.bsm-summary:hover {
+    opacity: 0.9;
 }
 
 /* --- Info table --- */
 .bsm-info-table {
     width: 100%;
     border-collapse: collapse;
-    margin-top: 0.75rem;
+    margin-top: 0.6rem;
     font-size: 0.78rem;
 }
 
@@ -120,39 +141,8 @@
     word-break: break-word;
 }
 
-.bsm-hosting-reason {
-    font-size: 0.68rem;
-    opacity: 0.55;
-    font-weight: 400;
-}
-
-/* --- Collapsible info section --- */
-.bsm-details {
-    margin-top: 0.75rem;
-    border-top: 1px solid rgba(128, 128, 128, 0.15);
-}
-
-.bsm-summary {
-    cursor: pointer;
-    padding: 0.5rem 0.1rem;
-    font-size: 0.75rem;
-    font-weight: 600;
-    letter-spacing: 0.05em;
-    opacity: 0.55;
-    list-style: none;
-    user-select: none;
-    transition: opacity 0.2s;
-}
-
-.bsm-summary::-webkit-details-marker {
-    display: none;
-}
-
-.bsm-summary:hover {
-    opacity: 1;
-}
-
-.bsm-details[open] .bsm-summary {
-    opacity: 0.8;
-    margin-bottom: 0.25rem;
+.bsm-hosting-reasons {
+    font-size: 0.7rem;
+    opacity: 0.6;
+    font-style: italic;
 }
