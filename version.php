@@ -25,7 +25,7 @@
 defined('MOODLE_INTERNAL') || die();
 
 $plugin->component = 'block_servermon';
-$plugin->version   = 2026031601;   // Bumped: clean zip repackage.
+$plugin->version   = 2026031900;   // Bumped past installed 2026031607.
 $plugin->requires  = 2024100700;   // Moodle 5.0 minimum.
 $plugin->maturity  = MATURITY_STABLE;
-$plugin->release   = '1.0.2';
+$plugin->release   = '1.0.3';
