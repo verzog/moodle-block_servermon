@@ -471,9 +471,20 @@ class block_servermon extends block_base {
             'wait' => $sess['wait'],
         ]);
         $html .= '<h6 class="bsm-debug-section-title">' . get_string('debug_session', 'block_servermon') . '</h6>';
-        $html .= '<div class="bsm-debug-alert bsm-alert-warn">' . $sessdetail;
+        $sessalert = $sess['type'] === 'file' ? 'bsm-alert-warn' : 'bsm-alert-info';
+        $html .= '<div class="bsm-debug-alert ' . $sessalert . '">' . $sessdetail;
         if ($sess['type'] === 'file') {
             $html .= '<br>' . get_string('debug_session_warn', 'block_servermon');
+        } else if ($sess['type'] === 'redis' && $sess['redis'] !== null) {
+            $r = $sess['redis'];
+            $html .= '<br>' . get_string('debug_session_redis', 'block_servermon', (object)[
+                'host'         => htmlspecialchars($r['host']),
+                'port'         => $r['port'],
+                'db'           => $r['db'],
+                'prefix'       => htmlspecialchars($r['prefix']),
+                'lock_timeout' => $r['lock_timeout'],
+                'lock_expire'  => $r['lock_expire'],
+            ]);
         }
         $html .= '</div>';
 
@@ -655,7 +666,20 @@ class block_servermon extends block_base {
             $size  = $bytes >= 1024 ? round($bytes / 1024, 1) . ' KB' : $bytes . ' B';
         }
 
-        return ['type' => $type, 'size' => $size, 'wait' => '0.000 s'];
+        $info = ['type' => $type, 'size' => $size, 'wait' => '0.000 s', 'redis' => null];
+
+        if ($type === 'redis') {
+            $info['redis'] = [
+                'host'         => $CFG->session_redis_host         ?? '127.0.0.1',
+                'port'         => $CFG->session_redis_port         ?? 6379,
+                'db'           => $CFG->session_redis_database      ?? 0,
+                'prefix'       => $CFG->session_redis_prefix        ?? '',
+                'lock_timeout' => $CFG->session_redis_acquire_lock_timeout ?? 120,
+                'lock_expire'  => $CFG->session_redis_lock_expire   ?? 7200,
+            ];
+        }
+
+        return $info;
     }
 
     /**
@@ -684,6 +708,19 @@ class block_servermon extends block_base {
         $modesession = class_exists('cache_store') ? cache_store::MODE_SESSION     : 2;
         $moderequest = class_exists('cache_store') ? cache_store::MODE_REQUEST     : 4;
 
+        // Build a definition-key => mode map.
+        // cache_helper::get_stats() does NOT embed mode in its output; we must look it up.
+        $modemap = [];
+        if (class_exists('cache_config') && method_exists('cache_config', 'instance')) {
+            try {
+                foreach (cache_config::instance()->get_definitions() as $defkey => $def) {
+                    $modemap[$defkey] = (int)($def['mode'] ?? $modeapp);
+                }
+            } catch (\Throwable $e) {
+                // Fall through — modemap stays empty; all non-static entries default to app.
+            }
+        }
+
         $agg = [
             'static'  => ['hits' => 0, 'misses' => 0, 'bytes' => 0, 'store' => ''],
             'app'     => ['hits' => 0, 'misses' => 0, 'bytes' => 0, 'store' => ''],
@@ -699,6 +736,9 @@ class block_servermon extends block_base {
             // Support both flat (one entry per definition) and nested (array of store entries).
             $entries = isset($data['hits']) || isset($data['misses']) ? [$data] : array_values($data);
 
+            // Resolve mode: prefer definition map, fall back to APPLICATION.
+            $mode = $modemap[$defkey] ?? $modeapp;
+
             foreach ($entries as $entry) {
                 if (!is_array($entry)) {
                     continue;
@@ -708,7 +748,6 @@ class block_servermon extends block_base {
                 $hits   = (int)($entry['hits']   ?? 0);
                 $misses = (int)($entry['misses'] ?? 0);
                 $bytes  = (int)($entry['bytes']  ?? 0);
-                $mode   = isset($entry['mode']) ? (int)$entry['mode'] : null;
 
                 // Entries backed by the static PHP-array store go into the static-accel bucket.
                 if (stripos($store, 'static') !== false || $store === 'disabled') {
@@ -728,6 +767,9 @@ class block_servermon extends block_base {
                     $agg['session']['hits']   += $hits;
                     $agg['session']['misses'] += $misses;
                     $agg['session']['bytes']  += $bytes;
+                    if (!$agg['session']['store']) {
+                        $agg['session']['store'] = $store;
+                    }
                 } else if ($mode === $moderequest) {
                     $agg['request']['hits']   += $hits;
                     $agg['request']['misses'] += $misses;
@@ -759,6 +801,10 @@ class block_servermon extends block_base {
             if ($missrate >= 50 && strpos($storetype, 'file') !== false) {
                 return "Application cache miss rate ~{$missrate}%"
                     . ' — adding Redis/APCu as the application store would cut file I/O.';
+            }
+            if ($missrate >= 50 && strpos($storetype, 'redis') !== false) {
+                return "Application cache miss rate ~{$missrate}% on Redis"
+                    . ' — consider increasing Redis maxmemory or review eviction policy.';
             }
         }
 

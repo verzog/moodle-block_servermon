@@ -42,6 +42,7 @@ $string['debug_obs']               = 'Observation';
 $string['debug_pagetime']          = 'Page load';
 $string['debug_session']           = 'Session handler';
 $string['debug_session_detail']    = 'Session type: {$a->type} • Session size: {$a->size} • Session wait: {$a->wait}';
+$string['debug_session_redis']     = 'Redis: {$a->host}:{$a->port} · db={$a->db} · prefix={$a->prefix} · lock-timeout={$a->lock_timeout} s · lock-expire={$a->lock_expire} s';
 $string['debug_session_warn']      = 'File sessions can cause AJAX request queuing — switching to Redis removes this risk.';
 $string['debug_toggle']            = 'Moodle debug footer — key metrics';
 $string['cpu_label']               = 'CPU Load';
