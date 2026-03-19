@@ -26,6 +26,24 @@ defined('MOODLE_INTERNAL') || die();
 
 // Strings are ordered alphabetically by key per Moodle coding style.
 $string['adminonly']               = 'This block is visible to site administrators only.';
+$string['debug_cache_app']         = 'Application cache ({$a})';
+$string['debug_cache_hits']        = 'Hits';
+$string['debug_cache_io']          = 'I/O (bytes)';
+$string['debug_cache_misses']      = 'Misses';
+$string['debug_cache_request']     = 'Request cache (in-memory, per-request)';
+$string['debug_cache_session']     = 'Session cache';
+$string['debug_cache_static']      = 'Static accelerator (in-process)';
+$string['debug_cache_store']       = 'Store';
+$string['debug_cache_title']       = 'Cache store performance';
+$string['debug_dbtime']            = 'DB query time';
+$string['debug_dbrw']              = 'DB reads/writes';
+$string['debug_memory']            = 'RAM used';
+$string['debug_obs']               = 'Observation';
+$string['debug_pagetime']          = 'Page load';
+$string['debug_session']           = 'Session handler';
+$string['debug_session_detail']    = 'Session type: {$a->type} • Session size: {$a->size} • Session wait: {$a->wait}';
+$string['debug_session_warn']      = 'File sessions can cause AJAX request queuing — switching to Redis removes this risk.';
+$string['debug_toggle']            = 'Moodle debug footer ▾';
 $string['cpu_label']               = 'CPU Load';
 $string['disk_label']              = 'Disk Space';
 $string['gb_free']                 = '{$a->free} GB free';

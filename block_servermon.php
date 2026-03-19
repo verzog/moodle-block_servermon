@@ -342,6 +342,7 @@ class block_servermon extends block_base {
         $html .= '<summary class="bsm-summary">' . $togglelabel . '</summary>';
         $html .= $this->render_info_table($m);
         $html .= '</details>';
+        $html .= $this->render_debug_footer();
         $html .= '</div>';
         return $html;
     }
@@ -438,6 +439,378 @@ class block_servermon extends block_base {
         $html .= '</table>';
 
         return $html;
+    }
+
+    /**
+     * Render the Moodle debug-footer dropdown with page performance metrics.
+     *
+     * @return string HTML output.
+     */
+    private function render_debug_footer(): string {
+        $d            = $this->collect_debug_metrics();
+        $togglelabel  = get_string('debug_toggle', 'block_servermon');
+        $unavail      = get_string('unavailable', 'block_servermon');
+
+        // Key metrics table.
+        $html = '<table class="bsm-info-table">';
+
+        $pagetime = $d['pagetime'] !== null ? $d['pagetime'] . ' s' : $unavail;
+        $html .= $this->debug_row(get_string('debug_pagetime', 'block_servermon'), $pagetime);
+
+        $memory = $d['memory'] !== null ? $d['memory'] . ' MB' : $unavail;
+        $html .= $this->debug_row(get_string('debug_memory', 'block_servermon'), $memory);
+
+        if ($d['dbreads'] !== null) {
+            $html .= $this->debug_row(
+                get_string('debug_dbrw', 'block_servermon'),
+                $d['dbreads'] . ' / ' . $d['dbwrites']
+            );
+        }
+
+        if ($d['dbtime'] !== null) {
+            $html .= $this->debug_row(get_string('debug_dbtime', 'block_servermon'), $d['dbtime'] . ' s');
+        }
+
+        // Session row.
+        $sess        = $d['session'];
+        $sessdetail  = get_string('debug_session_detail', 'block_servermon', (object)[
+            'type' => htmlspecialchars($sess['type']),
+            'size' => $sess['size'] ?? $unavail,
+            'wait' => $sess['wait'],
+        ]);
+        $html .= $this->debug_row(get_string('debug_session', 'block_servermon'), $sessdetail);
+
+        if ($sess['type'] === 'file') {
+            $html .= '<tr><td colspan="2" class="bsm-debug-warn">'
+                . get_string('debug_session_warn', 'block_servermon')
+                . '</td></tr>';
+        }
+
+        $html .= '</table>';
+
+        // Cache stats table.
+        $cachestats = $d['cachestats'];
+        if (!empty($cachestats)) {
+            $html .= $this->render_cache_table($cachestats);
+        }
+
+        // Observation.
+        if ($d['observation'] !== '') {
+            $html .= '<div class="bsm-debug-obs">'
+                . '<span class="bsm-debug-obs-label">' . get_string('debug_obs', 'block_servermon') . '</span> '
+                . htmlspecialchars($d['observation'])
+                . '</div>';
+        }
+
+        return '<details class="bsm-details">'
+            . '<summary class="bsm-summary">' . $togglelabel . '</summary>'
+            . $html
+            . '</details>';
+    }
+
+    /**
+     * Render a single key/value row for the debug metrics table.
+     *
+     * @param string $key   Row label.
+     * @param string $value Row value (may contain safe HTML).
+     * @return string HTML <tr> element.
+     */
+    private function debug_row(string $key, string $value): string {
+        return '<tr>'
+            . '<td class="bsm-info-key">' . $key . '</td>'
+            . '<td class="bsm-info-val">' . $value . '</td>'
+            . '</tr>';
+    }
+
+    /**
+     * Render the cache store performance table.
+     *
+     * @param array $cachestats Aggregated cache stats from get_cache_stats().
+     * @return string HTML output.
+     */
+    private function render_cache_table(array $cachestats): string {
+        $html  = '<div class="bsm-debug-cache-title">' . get_string('debug_cache_title', 'block_servermon') . '</div>';
+        $html .= '<table class="bsm-cache-table">';
+        $html .= '<thead><tr>'
+            . '<th>' . get_string('debug_cache_store',  'block_servermon') . '</th>'
+            . '<th class="bsm-num">' . get_string('debug_cache_hits',   'block_servermon') . '</th>'
+            . '<th class="bsm-num">' . get_string('debug_cache_misses', 'block_servermon') . '</th>'
+            . '<th class="bsm-num">' . get_string('debug_cache_io',     'block_servermon') . '</th>'
+            . '</tr></thead>';
+        $html .= '<tbody>';
+
+        $static = $cachestats['static'];
+        if ($static['hits'] > 0 || $static['misses'] > 0) {
+            $html .= $this->cache_row(
+                get_string('debug_cache_static', 'block_servermon'),
+                $static['hits'], $static['misses'], 0
+            );
+        }
+
+        $app      = $cachestats['app'];
+        $storetype = $this->get_store_type_label($app['store']);
+        $html .= $this->cache_row(
+            get_string('debug_cache_app', 'block_servermon', $storetype),
+            $app['hits'], $app['misses'], $app['bytes']
+        );
+
+        $req = $cachestats['request'];
+        if ($req['hits'] > 0 || $req['misses'] > 0) {
+            $html .= $this->cache_row(
+                get_string('debug_cache_request', 'block_servermon'),
+                $req['hits'], $req['misses'], 0
+            );
+        }
+
+        $sess = $cachestats['session'];
+        if ($sess['hits'] > 0 || $sess['misses'] > 0) {
+            $html .= $this->cache_row(
+                get_string('debug_cache_session', 'block_servermon'),
+                $sess['hits'], $sess['misses'], 0
+            );
+        }
+
+        $html .= '</tbody></table>';
+        return $html;
+    }
+
+    /**
+     * Render a single row for the cache performance table.
+     *
+     * @param string $label Store label.
+     * @param int    $hits  Cache hits.
+     * @param int    $misses Cache misses.
+     * @param int    $bytes  Bytes read/written (0 = show dash).
+     * @return string HTML <tr> element.
+     */
+    private function cache_row(string $label, int $hits, int $misses, int $bytes): string {
+        $io = $bytes > 0 ? $this->format_bytes($bytes) : '—';
+        return '<tr>'
+            . '<td>' . $label . '</td>'
+            . '<td class="bsm-num">' . $hits . '</td>'
+            . '<td class="bsm-num">' . $misses . '</td>'
+            . '<td class="bsm-num">' . $io . '</td>'
+            . '</tr>';
+    }
+
+    /**
+     * Collect Moodle page-performance metrics for the debug footer.
+     *
+     * @return array Keys: pagetime, memory, dbreads, dbwrites, dbtime, session, cachestats, observation.
+     */
+    private function collect_debug_metrics(): array {
+        global $DB, $CFG;
+
+        $result = [
+            'pagetime'    => null,
+            'memory'      => null,
+            'dbreads'     => null,
+            'dbwrites'    => null,
+            'dbtime'      => null,
+            'session'     => ['type' => 'file', 'size' => null, 'wait' => '0.000 s'],
+            'cachestats'  => [],
+            'observation' => '',
+        ];
+
+        // Page load time from PHP superglobal set at request start.
+        if (isset($_SERVER['REQUEST_TIME_FLOAT'])) {
+            $result['pagetime'] = round(microtime(true) - $_SERVER['REQUEST_TIME_FLOAT'], 2);
+        }
+
+        // Peak memory in MB (real_usage=false gives application-level usage).
+        $result['memory'] = round(memory_get_peak_usage(false) / 1048576, 1);
+
+        // DB reads/writes/query-time via Moodle's moodle_database perf API.
+        if (isset($DB) && method_exists($DB, 'perf_get_reads')) {
+            $result['dbreads']  = $DB->perf_get_reads();
+            $result['dbwrites'] = $DB->perf_get_writes();
+            if (method_exists($DB, 'perf_get_queries_time')) {
+                $result['dbtime'] = round($DB->perf_get_queries_time(), 3);
+            }
+        }
+
+        // Session info.
+        $result['session'] = $this->get_session_info();
+
+        // MUC cache stats.
+        $result['cachestats'] = $this->get_cache_stats();
+
+        // Build advisory observation after all data is collected.
+        $result['observation'] = $this->build_observation($result);
+
+        return $result;
+    }
+
+    /**
+     * Determine the current Moodle session type, size, and wait string.
+     *
+     * @return array Keys: type, size, wait.
+     */
+    private function get_session_info(): array {
+        global $CFG;
+
+        $type = 'file';
+        if (isset($CFG->session_handler_class)) {
+            $cls = strtolower($CFG->session_handler_class);
+            if (strpos($cls, 'redis') !== false) {
+                $type = 'redis';
+            } else if (strpos($cls, 'memcached') !== false) {
+                $type = 'memcached';
+            } else if (strpos($cls, 'database') !== false || strpos($cls, '_db') !== false) {
+                $type = 'database';
+            }
+        }
+
+        $size = null;
+        if (isset($_SESSION)) {
+            $bytes = strlen(serialize($_SESSION));
+            $size  = $bytes >= 1024 ? round($bytes / 1024, 1) . ' KB' : $bytes . ' B';
+        }
+
+        return ['type' => $type, 'size' => $size, 'wait' => '0.000 s'];
+    }
+
+    /**
+     * Collect and aggregate MUC cache statistics by cache mode.
+     *
+     * Returns an empty array when cache_helper is unavailable or returns no data.
+     *
+     * @return array Keys: static, app, session, request — each with hits, misses, bytes, store.
+     */
+    private function get_cache_stats(): array {
+        if (!class_exists('cache_helper') || !method_exists('cache_helper', 'get_stats')) {
+            return [];
+        }
+
+        try {
+            $raw = cache_helper::get_stats();
+        } catch (\Throwable $e) {
+            return [];
+        }
+
+        if (!is_array($raw) || empty($raw)) {
+            return [];
+        }
+
+        $modeapp     = class_exists('cache_store') ? cache_store::MODE_APPLICATION : 1;
+        $modesession = class_exists('cache_store') ? cache_store::MODE_SESSION     : 2;
+        $moderequest = class_exists('cache_store') ? cache_store::MODE_REQUEST     : 4;
+
+        $agg = [
+            'static'  => ['hits' => 0, 'misses' => 0, 'bytes' => 0, 'store' => ''],
+            'app'     => ['hits' => 0, 'misses' => 0, 'bytes' => 0, 'store' => ''],
+            'session' => ['hits' => 0, 'misses' => 0, 'bytes' => 0, 'store' => ''],
+            'request' => ['hits' => 0, 'misses' => 0, 'bytes' => 0, 'store' => ''],
+        ];
+
+        foreach ($raw as $defkey => $data) {
+            if (!is_array($data)) {
+                continue;
+            }
+
+            // Support both flat (one entry per definition) and nested (array of store entries).
+            $entries = isset($data['hits']) || isset($data['misses']) ? [$data] : array_values($data);
+
+            foreach ($entries as $entry) {
+                if (!is_array($entry)) {
+                    continue;
+                }
+
+                $store  = $entry['store'] ?? '';
+                $hits   = (int)($entry['hits']   ?? 0);
+                $misses = (int)($entry['misses'] ?? 0);
+                $bytes  = (int)($entry['bytes']  ?? 0);
+                $mode   = isset($entry['mode']) ? (int)$entry['mode'] : null;
+
+                // Entries backed by the static PHP-array store go into the static-accel bucket.
+                if (stripos($store, 'static') !== false || $store === 'disabled') {
+                    $agg['static']['hits']   += $hits;
+                    $agg['static']['misses'] += $misses;
+                    continue;
+                }
+
+                if ($mode === $modeapp) {
+                    $agg['app']['hits']   += $hits;
+                    $agg['app']['misses'] += $misses;
+                    $agg['app']['bytes']  += $bytes;
+                    if (!$agg['app']['store']) {
+                        $agg['app']['store'] = $store;
+                    }
+                } else if ($mode === $modesession) {
+                    $agg['session']['hits']   += $hits;
+                    $agg['session']['misses'] += $misses;
+                    $agg['session']['bytes']  += $bytes;
+                } else if ($mode === $moderequest) {
+                    $agg['request']['hits']   += $hits;
+                    $agg['request']['misses'] += $misses;
+                    $agg['request']['bytes']  += $bytes;
+                }
+            }
+        }
+
+        return $agg;
+    }
+
+    /**
+     * Build an advisory observation string based on collected debug metrics.
+     *
+     * @param array $d Debug metrics from collect_debug_metrics().
+     * @return string Observation text, or empty string if nothing notable.
+     */
+    private function build_observation(array $d): string {
+        if (empty($d['cachestats'])) {
+            return '';
+        }
+
+        $app   = $d['cachestats']['app'];
+        $total = $app['hits'] + $app['misses'];
+
+        if ($total > 0) {
+            $missrate  = round(($app['misses'] / $total) * 100);
+            $storetype = $this->get_store_type_label($app['store']);
+            if ($missrate >= 50 && strpos($storetype, 'file') !== false) {
+                return "Application cache miss rate ~{$missrate}%"
+                    . ' — adding Redis/APCu as the application store would cut file I/O.';
+            }
+        }
+
+        return '';
+    }
+
+    /**
+     * Derive a human-readable store type label from a raw store name.
+     *
+     * @param string $store Raw store name from cache stats.
+     * @return string Human-readable label, e.g. "file store", "redis store".
+     */
+    private function get_store_type_label(string $store): string {
+        $lower = strtolower($store);
+        if (strpos($lower, 'redis') !== false) {
+            return 'redis store';
+        }
+        if (strpos($lower, 'memcach') !== false) {
+            return 'memcached store';
+        }
+        if (strpos($lower, 'apcu') !== false || strpos($lower, 'apc') !== false) {
+            return 'APCu store';
+        }
+        return 'file store';
+    }
+
+    /**
+     * Format a byte count into a human-readable string (B / KB / MB).
+     *
+     * @param int $bytes Byte count.
+     * @return string Formatted string.
+     */
+    private function format_bytes(int $bytes): string {
+        if ($bytes >= 1048576) {
+            return round($bytes / 1048576, 1) . ' MB';
+        }
+        if ($bytes >= 1024) {
+            return round($bytes / 1024, 1) . ' KB';
+        }
+        return $bytes . ' B';
     }
 
     // ---------------------------------------------------------------
