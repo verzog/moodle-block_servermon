@@ -480,13 +480,14 @@ class block_servermon extends block_base {
         ]);
         $html .= $this->debug_row(get_string('debug_session', 'block_servermon'), $sessdetail);
 
-        if ($sess['type'] === 'file') {
-            $html .= '<tr><td colspan="2" class="bsm-debug-warn">'
-                . get_string('debug_session_warn', 'block_servermon')
-                . '</td></tr>';
-        }
-
         $html .= '</table>';
+
+        // File-session warning — Bootstrap alert-warning.
+        if ($sess['type'] === 'file') {
+            $html .= '<div class="alert alert-warning bsm-alert mt-2 mb-2">'
+                . get_string('debug_session_warn', 'block_servermon')
+                . '</div>';
+        }
 
         // Cache stats table.
         $cachestats = $d['cachestats'];
@@ -494,10 +495,10 @@ class block_servermon extends block_base {
             $html .= $this->render_cache_table($cachestats);
         }
 
-        // Observation.
+        // Observation — Bootstrap alert-info.
         if ($d['observation'] !== '') {
-            $html .= '<div class="bsm-debug-obs">'
-                . '<span class="bsm-debug-obs-label">' . get_string('debug_obs', 'block_servermon') . '</span> '
+            $html .= '<div class="alert alert-info bsm-alert mb-0">'
+                . '<strong>' . get_string('debug_obs', 'block_servermon') . ':</strong> '
                 . htmlspecialchars($d['observation'])
                 . '</div>';
         }
@@ -529,8 +530,8 @@ class block_servermon extends block_base {
      * @return string HTML output.
      */
     private function render_cache_table(array $cachestats): string {
-        $html  = '<div class="bsm-debug-cache-title">' . get_string('debug_cache_title', 'block_servermon') . '</div>';
-        $html .= '<table class="bsm-cache-table">';
+        $html  = '<p class="bsm-debug-cache-title">' . get_string('debug_cache_title', 'block_servermon') . '</p>';
+        $html .= '<table class="bsm-cache-table table table-sm table-bordered">';
         $html .= '<thead><tr>'
             . '<th>' . get_string('debug_cache_store',  'block_servermon') . '</th>'
             . '<th class="bsm-num">' . get_string('debug_cache_hits',   'block_servermon') . '</th>'
