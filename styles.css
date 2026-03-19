@@ -212,6 +212,11 @@
     color: #fff;
 }
 
+.bsm-alert-info {
+    background: #1e3a5f;
+    color: #fff;
+}
+
 /* Cache store rows */
 .bsm-cache-header {
     display: flex;
