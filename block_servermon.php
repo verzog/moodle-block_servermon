@@ -447,151 +447,138 @@ class block_servermon extends block_base {
      * @return string HTML output.
      */
     private function render_debug_footer(): string {
-        $d            = $this->collect_debug_metrics();
-        $togglelabel  = get_string('debug_toggle', 'block_servermon');
-        $unavail      = get_string('unavailable', 'block_servermon');
+        $d       = $this->collect_debug_metrics();
+        $label   = get_string('debug_toggle', 'block_servermon');
+        $unavail = get_string('unavailable', 'block_servermon');
 
-        // Key metrics table.
-        $html = '<table class="bsm-info-table">';
+        // 1. Four metric cards.
+        $html  = '<div class="bsm-debug-grid">';
+        $html .= $this->metric_card(get_string('debug_pagetime', 'block_servermon'),
+            $d['pagetime'] !== null ? $d['pagetime'] . ' s' : $unavail);
+        $html .= $this->metric_card(get_string('debug_memory', 'block_servermon'),
+            $d['memory'] !== null ? $d['memory'] . ' MB' : $unavail);
+        $html .= $this->metric_card(get_string('debug_dbrw', 'block_servermon'),
+            $d['dbreads'] !== null ? $d['dbreads'] . ' / ' . $d['dbwrites'] : $unavail);
+        $html .= $this->metric_card(get_string('debug_dbtime', 'block_servermon'),
+            $d['dbtime'] !== null ? $d['dbtime'] . ' s' : $unavail);
+        $html .= '</div>';
 
-        $pagetime = $d['pagetime'] !== null ? $d['pagetime'] . ' s' : $unavail;
-        $html .= $this->debug_row(get_string('debug_pagetime', 'block_servermon'), $pagetime);
-
-        $memory = $d['memory'] !== null ? $d['memory'] . ' MB' : $unavail;
-        $html .= $this->debug_row(get_string('debug_memory', 'block_servermon'), $memory);
-
-        if ($d['dbreads'] !== null) {
-            $html .= $this->debug_row(
-                get_string('debug_dbrw', 'block_servermon'),
-                $d['dbreads'] . ' / ' . $d['dbwrites']
-            );
-        }
-
-        if ($d['dbtime'] !== null) {
-            $html .= $this->debug_row(get_string('debug_dbtime', 'block_servermon'), $d['dbtime'] . ' s');
-        }
-
-        // Session row.
-        $sess        = $d['session'];
-        $sessdetail  = get_string('debug_session_detail', 'block_servermon', (object)[
+        // 2. Session handler section.
+        $sess = $d['session'];
+        $sessdetail = get_string('debug_session_detail', 'block_servermon', (object)[
             'type' => htmlspecialchars($sess['type']),
             'size' => $sess['size'] ?? $unavail,
             'wait' => $sess['wait'],
         ]);
-        $html .= $this->debug_row(get_string('debug_session', 'block_servermon'), $sessdetail);
-
-        $html .= '</table>';
-
-        // File-session warning — Bootstrap alert-warning.
+        $html .= '<h6 class="bsm-debug-section-title">' . get_string('debug_session', 'block_servermon') . '</h6>';
+        $html .= '<div class="bsm-debug-alert bsm-alert-warn">' . $sessdetail;
         if ($sess['type'] === 'file') {
-            $html .= '<div class="alert alert-warning bsm-alert mt-2 mb-2">'
-                . get_string('debug_session_warn', 'block_servermon')
-                . '</div>';
+            $html .= '<br>' . get_string('debug_session_warn', 'block_servermon');
+        }
+        $html .= '</div>';
+
+        // 3. Cache store performance.
+        if (!empty($d['cachestats'])) {
+            $html .= $this->render_cache_section($d['cachestats']);
         }
 
-        // Cache stats table.
-        $cachestats = $d['cachestats'];
-        if (!empty($cachestats)) {
-            $html .= $this->render_cache_table($cachestats);
-        }
-
-        // Observation — Bootstrap alert-info.
+        // 4. Observation.
         if ($d['observation'] !== '') {
-            $html .= '<div class="alert alert-info bsm-alert mb-0">'
-                . '<strong>' . get_string('debug_obs', 'block_servermon') . ':</strong> '
+            $html .= '<h6 class="bsm-debug-section-title">' . get_string('debug_obs', 'block_servermon') . '</h6>';
+            $html .= '<div class="bsm-debug-alert bsm-alert-warn">'
                 . htmlspecialchars($d['observation'])
                 . '</div>';
         }
 
         return '<details class="bsm-details">'
-            . '<summary class="bsm-summary">' . $togglelabel . '</summary>'
-            . $html
+            . '<summary class="bsm-summary bsm-summary-debug">' . $label . '</summary>'
+            . '<div class="bsm-debug-body">' . $html . '</div>'
             . '</details>';
     }
 
     /**
-     * Render a single key/value row for the debug metrics table.
+     * Render a single metric stat card.
      *
-     * @param string $key   Row label.
-     * @param string $value Row value (may contain safe HTML).
-     * @return string HTML <tr> element.
+     * @param string $label Card label.
+     * @param string $value Card value.
+     * @return string HTML output.
      */
-    private function debug_row(string $key, string $value): string {
-        return '<tr>'
-            . '<td class="bsm-info-key">' . $key . '</td>'
-            . '<td class="bsm-info-val">' . $value . '</td>'
-            . '</tr>';
+    private function metric_card(string $label, string $value): string {
+        return '<div class="bsm-metric-card">'
+            . '<div class="bsm-metric-label">' . $label . '</div>'
+            . '<div class="bsm-metric-value">' . $value . '</div>'
+            . '</div>';
     }
 
     /**
-     * Render the cache store performance table.
+     * Render the cache store performance section.
      *
      * @param array $cachestats Aggregated cache stats from get_cache_stats().
      * @return string HTML output.
      */
-    private function render_cache_table(array $cachestats): string {
-        $html  = '<p class="bsm-debug-cache-title">' . get_string('debug_cache_title', 'block_servermon') . '</p>';
-        $html .= '<table class="bsm-cache-table table table-sm table-bordered">';
-        $html .= '<thead><tr>'
-            . '<th>' . get_string('debug_cache_store',  'block_servermon') . '</th>'
-            . '<th class="bsm-num">' . get_string('debug_cache_hits',   'block_servermon') . '</th>'
-            . '<th class="bsm-num">' . get_string('debug_cache_misses', 'block_servermon') . '</th>'
-            . '<th class="bsm-num">' . get_string('debug_cache_io',     'block_servermon') . '</th>'
-            . '</tr></thead>';
-        $html .= '<tbody>';
+    private function render_cache_section(array $cachestats): string {
+        $html  = '<h6 class="bsm-debug-section-title">' . get_string('debug_cache_title', 'block_servermon') . '</h6>';
+
+        // Column header row.
+        $html .= '<div class="bsm-cache-header">'
+            . '<span class="bsm-cache-name">' . get_string('debug_cache_store',  'block_servermon') . '</span>'
+            . '<span class="bsm-cache-stat">' . get_string('debug_cache_hits',   'block_servermon') . '</span>'
+            . '<span class="bsm-cache-stat">' . get_string('debug_cache_misses', 'block_servermon') . '</span>'
+            . '<span class="bsm-cache-stat">' . get_string('debug_cache_io',     'block_servermon') . '</span>'
+            . '</div>';
 
         $static = $cachestats['static'];
         if ($static['hits'] > 0 || $static['misses'] > 0) {
-            $html .= $this->cache_row(
+            $html .= $this->cache_div_row(
                 get_string('debug_cache_static', 'block_servermon'),
-                $static['hits'], $static['misses'], 0
+                $static['hits'], $static['misses'], 0, true
             );
         }
 
-        $app      = $cachestats['app'];
-        $storetype = $this->get_store_type_label($app['store']);
-        $html .= $this->cache_row(
-            get_string('debug_cache_app', 'block_servermon', $storetype),
-            $app['hits'], $app['misses'], $app['bytes']
+        $app = $cachestats['app'];
+        $html .= $this->cache_div_row(
+            get_string('debug_cache_app', 'block_servermon', $this->get_store_type_label($app['store'])),
+            $app['hits'], $app['misses'], $app['bytes'], false
         );
 
         $req = $cachestats['request'];
         if ($req['hits'] > 0 || $req['misses'] > 0) {
-            $html .= $this->cache_row(
+            $html .= $this->cache_div_row(
                 get_string('debug_cache_request', 'block_servermon'),
-                $req['hits'], $req['misses'], 0
+                $req['hits'], $req['misses'], 0, false
             );
         }
 
         $sess = $cachestats['session'];
         if ($sess['hits'] > 0 || $sess['misses'] > 0) {
-            $html .= $this->cache_row(
+            $html .= $this->cache_div_row(
                 get_string('debug_cache_session', 'block_servermon'),
-                $sess['hits'], $sess['misses'], 0
+                $sess['hits'], $sess['misses'], 0, false
             );
         }
 
-        $html .= '</tbody></table>';
         return $html;
     }
 
     /**
-     * Render a single row for the cache performance table.
+     * Render a single cache store row as a styled div.
      *
-     * @param string $label Store label.
-     * @param int    $hits  Cache hits.
-     * @param int    $misses Cache misses.
-     * @param int    $bytes  Bytes read/written (0 = show dash).
-     * @return string HTML <tr> element.
+     * @param string $label     Store label.
+     * @param int    $hits      Cache hits.
+     * @param int    $misses    Cache misses.
+     * @param int    $bytes     Bytes read/written (0 = show dash).
+     * @param bool   $highlight True for the green "top store" highlight style.
+     * @return string HTML output.
      */
-    private function cache_row(string $label, int $hits, int $misses, int $bytes): string {
-        $io = $bytes > 0 ? $this->format_bytes($bytes) : '—';
-        return '<tr>'
-            . '<td>' . $label . '</td>'
-            . '<td class="bsm-num">' . $hits . '</td>'
-            . '<td class="bsm-num">' . $misses . '</td>'
-            . '<td class="bsm-num">' . $io . '</td>'
-            . '</tr>';
+    private function cache_div_row(string $label, int $hits, int $misses, int $bytes, bool $highlight): string {
+        $cls = 'bsm-cache-row' . ($highlight ? ' bsm-cache-highlight' : '');
+        $io  = $bytes > 0 ? $this->format_bytes($bytes) : '—';
+        return '<div class="' . $cls . '">'
+            . '<span class="bsm-cache-name">' . $label . '</span>'
+            . '<span class="bsm-cache-stat">' . $hits . '</span>'
+            . '<span class="bsm-cache-stat">' . $misses . '</span>'
+            . '<span class="bsm-cache-stat">' . $io . '</span>'
+            . '</div>';
     }
 
     /**
