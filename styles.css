@@ -146,3 +146,61 @@
     opacity: 0.6;
     font-style: italic;
 }
+
+/* --- Debug footer dropdown --- */
+.bsm-debug-warn {
+    font-size: 0.72rem;
+    color: #d68910;
+    font-style: italic;
+    padding: 0.2rem 0.1rem 0.35rem;
+}
+
+.bsm-debug-cache-title {
+    font-size: 0.73rem;
+    font-weight: 600;
+    opacity: 0.65;
+    margin: 0.8rem 0 0.3rem;
+}
+
+.bsm-cache-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.75rem;
+}
+
+.bsm-cache-table th {
+    font-weight: 600;
+    opacity: 0.55;
+    padding: 0.2rem 0.3rem 0.2rem 0;
+    text-align: left;
+    border-bottom: 1px solid rgba(128, 128, 128, 0.2);
+}
+
+.bsm-cache-table td {
+    padding: 0.25rem 0.3rem 0.25rem 0;
+    border-top: 1px solid rgba(128, 128, 128, 0.08);
+    vertical-align: top;
+}
+
+.bsm-cache-table tr:first-child td {
+    border-top: none;
+}
+
+.bsm-num {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+}
+
+.bsm-debug-obs {
+    font-size: 0.72rem;
+    margin-top: 0.6rem;
+    font-style: italic;
+    opacity: 0.75;
+    padding: 0.3rem 0;
+    border-top: 1px solid rgba(128, 128, 128, 0.12);
+}
+
+.bsm-debug-obs-label {
+    font-weight: 600;
+    font-style: normal;
+}
