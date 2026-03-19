@@ -704,22 +704,14 @@ class block_servermon extends block_base {
             return [];
         }
 
+        // cache_helper::get_stats() returns:
+        // [ 'defkey' => [ 'mode' => int, 'stores' => [ 'storename' => [
+        //      'class' => string, 'hits' => int, 'misses' => int,
+        //      'sets' => int, 'iobytes' => int (-1 = not supported), 'locks' => int
+        // ] ] ] ]
         $modeapp     = class_exists('cache_store') ? cache_store::MODE_APPLICATION : 1;
         $modesession = class_exists('cache_store') ? cache_store::MODE_SESSION     : 2;
         $moderequest = class_exists('cache_store') ? cache_store::MODE_REQUEST     : 4;
-
-        // Build a definition-key => mode map.
-        // cache_helper::get_stats() does NOT embed mode in its output; we must look it up.
-        $modemap = [];
-        if (class_exists('cache_config') && method_exists('cache_config', 'instance')) {
-            try {
-                foreach (cache_config::instance()->get_definitions() as $defkey => $def) {
-                    $modemap[$defkey] = (int)($def['mode'] ?? $modeapp);
-                }
-            } catch (\Throwable $e) {
-                // Fall through — modemap stays empty; all non-static entries default to app.
-            }
-        }
 
         $agg = [
             'static'  => ['hits' => 0, 'misses' => 0, 'bytes' => 0, 'store' => ''],
@@ -729,28 +721,29 @@ class block_servermon extends block_base {
         ];
 
         foreach ($raw as $defkey => $data) {
-            if (!is_array($data)) {
+            if (!is_array($data) || empty($data['stores'])) {
                 continue;
             }
 
-            // Support both flat (one entry per definition) and nested (array of store entries).
-            $entries = isset($data['hits']) || isset($data['misses']) ? [$data] : array_values($data);
+            // Mode is stored at the definition level.
+            $mode = (int)($data['mode'] ?? $modeapp);
 
-            // Resolve mode: prefer definition map, fall back to APPLICATION.
-            $mode = $modemap[$defkey] ?? $modeapp;
-
-            foreach ($entries as $entry) {
+            foreach ($data['stores'] as $storename => $entry) {
                 if (!is_array($entry)) {
                     continue;
                 }
 
-                $store  = $entry['store'] ?? '';
-                $hits   = (int)($entry['hits']   ?? 0);
-                $misses = (int)($entry['misses'] ?? 0);
-                $bytes  = (int)($entry['bytes']  ?? 0);
+                $hits    = (int)($entry['hits']    ?? 0);
+                $misses  = (int)($entry['misses']  ?? 0);
+                // iobytes is -1 when not supported by the store.
+                $iobytes = (int)($entry['iobytes'] ?? -1);
+                $bytes   = $iobytes > 0 ? $iobytes : 0;
+                // Use class name for store-type detection (more reliable than store instance name).
+                $storeclass = strtolower($entry['class'] ?? $storename);
 
-                // Entries backed by the static PHP-array store go into the static-accel bucket.
-                if (stripos($store, 'static') !== false || $store === 'disabled') {
+                // Static PHP-array accelerator — goes into its own bucket.
+                if (stripos($storename, 'static') !== false ||
+                    strpos($storeclass, 'static') !== false) {
                     $agg['static']['hits']   += $hits;
                     $agg['static']['misses'] += $misses;
                     continue;
@@ -761,14 +754,14 @@ class block_servermon extends block_base {
                     $agg['app']['misses'] += $misses;
                     $agg['app']['bytes']  += $bytes;
                     if (!$agg['app']['store']) {
-                        $agg['app']['store'] = $store;
+                        $agg['app']['store'] = $storeclass;
                     }
                 } else if ($mode === $modesession) {
                     $agg['session']['hits']   += $hits;
                     $agg['session']['misses'] += $misses;
                     $agg['session']['bytes']  += $bytes;
                     if (!$agg['session']['store']) {
-                        $agg['session']['store'] = $store;
+                        $agg['session']['store'] = $storeclass;
                     }
                 } else if ($mode === $moderequest) {
                     $agg['request']['hits']   += $hits;
