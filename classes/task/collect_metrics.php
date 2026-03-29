@@ -57,65 +57,91 @@ class collect_metrics extends \core\task\scheduled_task {
 
         $islinux = (strtoupper(substr(PHP_OS, 0, 3)) !== 'WIN');
 
-        // Collect per-core CPU via /proc/stat two-sample delta.
-        $percore = [];
-        $cores   = 0;
+        [$percore, $cores] = $this->collect_cpu_percore($islinux);
 
-        if ($islinux && is_readable('/proc/stat')) {
-            $snap1 = $this->read_proc_stat();
-            sleep(1); // 1-second sample window — acceptable in a background task.
-            $snap2 = $this->read_proc_stat();
-
-            $core = 0;
-            while (isset($snap1['cpu' . $core], $snap2['cpu' . $core])) {
-                $pct = $this->calc_cpu_pct($snap1['cpu' . $core], $snap2['cpu' . $core]);
-                $percore[] = $pct !== null ? $pct : 0.0;
-                $core++;
-            }
-            $cores = $core;
-        }
-
-        // Collect RAM %.
-        $rampct = null;
-        if ($islinux && is_readable('/proc/meminfo')) {
-            $meminfo = @file_get_contents('/proc/meminfo');
-            if ($meminfo !== false) {
-                preg_match('/MemTotal:\s+(\d+)/i', $meminfo, $mtotal);
-                preg_match('/MemAvailable:\s+(\d+)/i', $meminfo, $mavail);
-                if ($mtotal && $mavail) {
-                    $totalkb = (int) $mtotal[1];
-                    $freekb  = (int) $mavail[1];
-                    $rampct  = $totalkb > 0
-                        ? round((($totalkb - $freekb) / $totalkb) * 100, 1)
-                        : null;
-                }
-            }
-        }
-
-        // Collect disk %.
-        $diskpct = null;
-        if (function_exists('disk_total_space')) {
-            $path  = $islinux ? '/' : 'C:\\';
-            $total = @disk_total_space($path);
-            $free  = @disk_free_space($path);
-            if ($total && $free && $total > 0) {
-                $diskpct = round((($total - $free) / $total) * 100, 1);
-            }
-        }
-
-        // Write snapshot row.
         $record = new \stdClass();
         $record->timecreated = time();
         $record->cpu_cores   = $cores;
         $record->cpu_percore = !empty($percore) ? json_encode($percore) : null;
-        $record->ram_pct     = $rampct;
-        $record->disk_pct    = $diskpct;
+        $record->ram_pct     = $this->collect_ram_pct($islinux);
+        $record->disk_pct    = $this->collect_disk_pct($islinux);
 
         $DB->insert_record('block_servermon_log', $record);
 
-        // Purge rows older than 7 days.
         $cutoff = time() - (7 * DAYSECS);
         $DB->delete_records_select('block_servermon_log', 'timecreated < :cutoff', ['cutoff' => $cutoff]);
+    }
+
+    /**
+     * Sample /proc/stat twice (1 s apart) and return per-core CPU percentages.
+     *
+     * @param bool $islinux Whether the server is running Linux.
+     * @return array Two-element array: [float[] percore, int cores].
+     */
+    private function collect_cpu_percore(bool $islinux): array {
+        $percore = [];
+        $cores   = 0;
+
+        if (!$islinux || !is_readable('/proc/stat')) {
+            return [$percore, $cores];
+        }
+
+        $snap1 = $this->read_proc_stat();
+        sleep(1); // 1-second sample window — acceptable in a background task.
+        $snap2 = $this->read_proc_stat();
+
+        $core = 0;
+        while (isset($snap1['cpu' . $core], $snap2['cpu' . $core])) {
+            $pct = $this->calc_cpu_pct($snap1['cpu' . $core], $snap2['cpu' . $core]);
+            $percore[] = $pct !== null ? $pct : 0.0;
+            $core++;
+        }
+        $cores = $core;
+
+        return [$percore, $cores];
+    }
+
+    /**
+     * Read RAM usage percentage from /proc/meminfo.
+     *
+     * @param bool $islinux Whether the server is running Linux.
+     * @return float|null RAM usage percentage, or null if unavailable.
+     */
+    private function collect_ram_pct(bool $islinux): ?float {
+        if (!$islinux || !is_readable('/proc/meminfo')) {
+            return null;
+        }
+        $meminfo = @file_get_contents('/proc/meminfo');
+        if ($meminfo === false) {
+            return null;
+        }
+        preg_match('/MemTotal:\s+(\d+)/i', $meminfo, $mtotal);
+        preg_match('/MemAvailable:\s+(\d+)/i', $meminfo, $mavail);
+        if (!$mtotal || !$mavail) {
+            return null;
+        }
+        $totalkb = (int) $mtotal[1];
+        $freekb  = (int) $mavail[1];
+        return $totalkb > 0 ? round((($totalkb - $freekb) / $totalkb) * 100, 1) : null;
+    }
+
+    /**
+     * Read disk usage percentage via PHP disk functions.
+     *
+     * @param bool $islinux Whether the server is running Linux.
+     * @return float|null Disk usage percentage, or null if unavailable.
+     */
+    private function collect_disk_pct(bool $islinux): ?float {
+        if (!function_exists('disk_total_space')) {
+            return null;
+        }
+        $path  = $islinux ? '/' : 'C:\\\\';
+        $total = @disk_total_space($path);
+        $free  = @disk_free_space($path);
+        if (!$total || !$free || $total <= 0) {
+            return null;
+        }
+        return round((($total - $free) / $total) * 100, 1);
     }
 
     /**

@@ -149,20 +149,42 @@ class block_servermon extends block_base {
             return $result;
         }
 
-        // Load averages — useful context alongside real usage %.
-        if (function_exists('sys_getloadavg')) {
-            $load = @sys_getloadavg();
-            if ($load) {
-                $result['load1']  = round($load[0], 2);
-                $result['load5']  = round($load[1], 2);
-                $result['load15'] = round($load[2], 2);
-            }
-        }
+        $result = array_merge($result, $this->get_load_averages());
 
-        // Real CPU usage via /proc/stat two-sample delta.
         if (!is_readable('/proc/stat')) {
             return $result;
         }
+
+        return array_merge($result, $this->get_cpu_percore_stats());
+    }
+
+    /**
+     * Read load averages from sys_getloadavg().
+     *
+     * @return array Keys: load1, load5, load15.
+     */
+    private function get_load_averages(): array {
+        if (!function_exists('sys_getloadavg')) {
+            return ['load1' => null, 'load5' => null, 'load15' => null];
+        }
+        $load = @sys_getloadavg();
+        if (!$load) {
+            return ['load1' => null, 'load5' => null, 'load15' => null];
+        }
+        return [
+            'load1'  => round($load[0], 2),
+            'load5'  => round($load[1], 2),
+            'load15' => round($load[2], 2),
+        ];
+    }
+
+    /**
+     * Sample /proc/stat twice (0.5 s apart) and return aggregate and per-core CPU percentages.
+     *
+     * @return array Keys: pct, cores, percore.
+     */
+    private function get_cpu_percore_stats(): array {
+        $result = ['pct' => null, 'cores' => null, 'percore' => []];
 
         $snap1 = $this->read_proc_stat();
         usleep(500000); // 0.5 second sample window.
@@ -172,12 +194,10 @@ class block_servermon extends block_base {
             return $result;
         }
 
-        // Aggregate % from the combined 'cpu' line.
         if (isset($snap1['cpu'], $snap2['cpu'])) {
             $result['pct'] = $this->calc_cpu_pct($snap1['cpu'], $snap2['cpu']);
         }
 
-        // Per-core breakdown from cpu0, cpu1, cpu2 ... lines.
         $core = 0;
         while (isset($snap1['cpu' . $core], $snap2['cpu' . $core])) {
             $result['percore'][] = [
@@ -188,7 +208,6 @@ class block_servermon extends block_base {
         }
 
         $result['cores'] = $core > 0 ? $core : null;
-
         return $result;
     }
 
@@ -335,68 +354,113 @@ class block_servermon extends block_base {
      * @return array Keys: label (string), reasons (array of strings).
      */
     private function get_hosting_type(bool $islinux): array {
-        $score   = 0;
-        $reasons = [];
-
         if (!$islinux) {
             return ['label' => 'Windows Server (unconfirmed)', 'reasons' => []];
         }
 
-        // CPU core count.
-        $cores = 1;
-        if (is_readable('/proc/cpuinfo')) {
-            $cpuinfo = file_get_contents('/proc/cpuinfo');
-            preg_match_all('/^processor\s*:/m', $cpuinfo, $matches);
-            $cores = max(1, count($matches[0]));
-        }
-        if ($cores >= 2) {
-            $score++;
-            $reasons[] = "{$cores} CPU cores visible";
+        $score   = 0;
+        $reasons = [];
+
+        [$cpuscore, $cpureason] = $this->hosting_score_cpu();
+        $score += $cpuscore;
+        if ($cpureason) {
+            $reasons[] = $cpureason;
         }
 
-        // RAM threshold.
-        if (is_readable('/proc/meminfo')) {
-            $meminfo = file_get_contents('/proc/meminfo');
-            preg_match('/MemTotal:\s+(\d+)/i', $meminfo, $m);
-            if ($m) {
-                $rammb = (int) $m[1] / 1024;
-                if ($rammb >= 900) {
-                    $score++;
-                    $reasons[] = round($rammb / 1024, 1) . ' GB RAM';
-                }
-            }
+        [$ramscore, $ramreason] = $this->hosting_score_ram();
+        $score += $ramscore;
+        if ($ramreason) {
+            $reasons[] = $ramreason;
         }
 
-        // Network interfaces.
         if (is_readable('/proc/net/dev')) {
             $score++;
             $reasons[] = '/proc/net/dev readable';
         }
 
-        // Hostname file.
         if (file_exists('/etc/hostname')) {
             $score++;
             $reasons[] = '/etc/hostname present';
         }
 
-        // Process user.
-        if (function_exists('posix_getpwuid') && function_exists('posix_geteuid')) {
-            $user = posix_getpwuid(posix_geteuid());
-            if ($user && !in_array($user['name'], ['nobody', 'www-data', 'apache', 'nginx'])) {
-                $score++;
-                $reasons[] = 'Running as ' . $user['name'];
-            }
+        [$userscore, $userreason] = $this->hosting_score_user();
+        $score += $userscore;
+        if ($userreason) {
+            $reasons[] = $userreason;
         }
 
+        return ['label' => $this->hosting_label_from_score($score), 'reasons' => $reasons];
+    }
+
+    /**
+     * Score hosting environment based on CPU core count.
+     *
+     * @return array Two-element array: [int score, string|null reason].
+     */
+    private function hosting_score_cpu(): array {
+        if (!is_readable('/proc/cpuinfo')) {
+            return [0, null];
+        }
+        $cpuinfo = file_get_contents('/proc/cpuinfo');
+        preg_match_all('/^processor\s*:/m', $cpuinfo, $matches);
+        $cores = max(1, count($matches[0]));
+        if ($cores >= 2) {
+            return [1, "{$cores} CPU cores visible"];
+        }
+        return [0, null];
+    }
+
+    /**
+     * Score hosting environment based on available RAM.
+     *
+     * @return array Two-element array: [int score, string|null reason].
+     */
+    private function hosting_score_ram(): array {
+        if (!is_readable('/proc/meminfo')) {
+            return [0, null];
+        }
+        $meminfo = file_get_contents('/proc/meminfo');
+        preg_match('/MemTotal:\s+(\d+)/i', $meminfo, $m);
+        if (!$m) {
+            return [0, null];
+        }
+        $rammb = (int) $m[1] / 1024;
+        if ($rammb >= 900) {
+            return [1, round($rammb / 1024, 1) . ' GB RAM'];
+        }
+        return [0, null];
+    }
+
+    /**
+     * Score hosting environment based on the process owner username.
+     *
+     * @return array Two-element array: [int score, string|null reason].
+     */
+    private function hosting_score_user(): array {
+        if (!function_exists('posix_getpwuid') || !function_exists('posix_geteuid')) {
+            return [0, null];
+        }
+        $user = posix_getpwuid(posix_geteuid());
+        if ($user && !in_array($user['name'], ['nobody', 'www-data', 'apache', 'nginx'])) {
+            return [1, 'Running as ' . $user['name']];
+        }
+        return [0, null];
+    }
+
+    /**
+     * Return a hosting environment label based on heuristic score.
+     *
+     * @param int $score Accumulated signal score.
+     * @return string Human-readable label.
+     */
+    private function hosting_label_from_score(int $score): string {
         if ($score >= 3) {
-            $label = 'Likely VPS or Dedicated (unconfirmed)';
-        } else if ($score >= 1) {
-            $label = 'Likely Shared Hosting or small VPS (unconfirmed)';
-        } else {
-            $label = 'Likely Shared Hosting (unconfirmed)';
+            return 'Likely VPS or Dedicated (unconfirmed)';
         }
-
-        return ['label' => $label, 'reasons' => $reasons];
+        if ($score >= 1) {
+            return 'Likely Shared Hosting or small VPS (unconfirmed)';
+        }
+        return 'Likely Shared Hosting (unconfirmed)';
     }
 
     // Rendering.
@@ -439,30 +503,10 @@ class block_servermon extends block_base {
         $label  = get_string("{$type}_label", 'block_servermon');
         $colour = $this->status_colour($pct);
         $badge  = $this->status_badge($pct);
-        $barpct = $pct !== null ? min($pct, 100) : 0;
 
-        // Build detail line.
-        $detail = '';
-        if ($type === 'cpu' && $pct !== null && $data['load1'] !== null) {
-            $detail = get_string('load_averages', 'block_servermon', (object)[
-                'one'     => $data['load1'],
-                'five'    => $data['load5'],
-                'fifteen' => $data['load15'],
-            ]);
-        } else if (in_array($type, ['ram', 'disk']) && $data['total'] !== null) {
-            $detail = get_string('ram_detail', 'block_servermon', (object)[
-                'used'  => $data['used'],
-                'total' => $data['total'],
-                'free'  => $data['free'],
-            ]);
-        }
-
-        $unavailmsg = $pct === null
+        $valuedisplay = $pct !== null ? '<span class="bsm-pct">' . $pct . '%</span>' : '';
+        $unavailmsg   = $pct === null
             ? '<div class="bsm-unavail">' . get_string('unavailable', 'block_servermon') . '</div>'
-            : '';
-
-        $valuedisplay = $pct !== null
-            ? '<span class="bsm-pct">' . $pct . '%</span>'
             : '';
 
         $html  = '<div class="bsm-row">';
@@ -470,39 +514,85 @@ class block_servermon extends block_base {
         $html .= '<span class="bsm-label">' . $label . '</span>';
         $html .= '<span class="bsm-right">' . $valuedisplay . $badge . '</span>';
         $html .= '</div>';
-
-        if ($pct !== null) {
-            $html .= '<div class="bsm-bar-track">';
-            $html .= '<div class="bsm-bar-fill bsm-' . $colour . '" style="width:' . $barpct . '%"></div>';
-            $html .= '</div>';
-        }
-
-        if ($detail) {
-            $html .= '<div class="bsm-detail">' . $detail . '</div>';
-        }
-
+        $html .= $this->render_bar($pct, $colour);
+        $html .= $this->render_metric_detail($type, $data);
         $html .= $unavailmsg;
+        $html .= $this->render_percore_bars($type, $data);
+        $html .= '</div>';
 
-        // Per-core breakdown — CPU only.
-        if ($type === 'cpu' && !empty($data['percore'])) {
-            $html .= '<div class="bsm-percore">';
-            foreach ($data['percore'] as $c) {
-                $ccolour = $this->status_colour($c['pct']);
-                $cbarpct = min($c['pct'], 100);
-                $html .= '<div class="bsm-percore-row">';
-                $html .= '<span class="bsm-percore-label">'
-                    . get_string('cpu_core', 'block_servermon', $c['core'])
-                    . '</span>';
-                $html .= '<div class="bsm-bar-track bsm-percore-track">'
-                    . '<div class="bsm-bar-fill bsm-' . $ccolour
-                    . '" style="width:' . $cbarpct . '%"></div>'
-                    . '</div>';
-                $html .= '<span class="bsm-percore-pct">' . $c['pct'] . '%</span>';
-                $html .= '</div>';
-            }
+        return $html;
+    }
+
+    /**
+     * Render the progress bar for a metric row, or empty string if unavailable.
+     *
+     * @param float|null $pct Percentage value.
+     * @param string $colour CSS colour class suffix.
+     * @return string HTML output.
+     */
+    private function render_bar(?float $pct, string $colour): string {
+        if ($pct === null) {
+            return '';
+        }
+        $barpct = min($pct, 100);
+        return '<div class="bsm-bar-track">'
+            . '<div class="bsm-bar-fill bsm-' . $colour . '" style="width:' . $barpct . '%"></div>'
+            . '</div>';
+    }
+
+    /**
+     * Render the detail line beneath a metric bar (load averages or GB breakdown).
+     *
+     * @param string $type Metric type: cpu, ram, or disk.
+     * @param array $data Metric data array.
+     * @return string HTML output.
+     */
+    private function render_metric_detail(string $type, array $data): string {
+        if ($type === 'cpu' && $data['pct'] !== null && $data['load1'] !== null) {
+            $detail = get_string('load_averages', 'block_servermon', (object)[
+                'one'     => $data['load1'],
+                'five'    => $data['load5'],
+                'fifteen' => $data['load15'],
+            ]);
+            return '<div class="bsm-detail">' . $detail . '</div>';
+        }
+        if (in_array($type, ['ram', 'disk']) && $data['total'] !== null) {
+            $detail = get_string('ram_detail', 'block_servermon', (object)[
+                'used'  => $data['used'],
+                'total' => $data['total'],
+                'free'  => $data['free'],
+            ]);
+            return '<div class="bsm-detail">' . $detail . '</div>';
+        }
+        return '';
+    }
+
+    /**
+     * Render per-core CPU breakdown bars (CPU metric type only).
+     *
+     * @param string $type Metric type.
+     * @param array $data Metric data array.
+     * @return string HTML output.
+     */
+    private function render_percore_bars(string $type, array $data): string {
+        if ($type !== 'cpu' || empty($data['percore'])) {
+            return '';
+        }
+        $html = '<div class="bsm-percore">';
+        foreach ($data['percore'] as $c) {
+            $ccolour = $this->status_colour($c['pct']);
+            $cbarpct = min($c['pct'], 100);
+            $html .= '<div class="bsm-percore-row">';
+            $html .= '<span class="bsm-percore-label">'
+                . get_string('cpu_core', 'block_servermon', $c['core'])
+                . '</span>';
+            $html .= '<div class="bsm-bar-track bsm-percore-track">'
+                . '<div class="bsm-bar-fill bsm-' . $ccolour
+                . '" style="width:' . $cbarpct . '%"></div>'
+                . '</div>';
+            $html .= '<span class="bsm-percore-pct">' . $c['pct'] . '%</span>';
             $html .= '</div>';
         }
-
         $html .= '</div>';
         return $html;
     }
@@ -546,11 +636,37 @@ class block_servermon extends block_base {
      * @return string HTML output.
      */
     private function render_debug_footer(): string {
-        $d       = $this->collect_debug_metrics();
-        $label   = get_string('debug_toggle', 'block_servermon');
-        $unavail = get_string('unavailable', 'block_servermon');
+        $d     = $this->collect_debug_metrics();
+        $label = get_string('debug_toggle', 'block_servermon');
 
-        // Four metric cards.
+        $html  = $this->render_debug_metric_cards($d);
+        $html .= $this->render_debug_session($d['session']);
+
+        if (!empty($d['cachestats'])) {
+            $html .= $this->render_cache_section($d['cachestats']);
+        }
+
+        if ($d['observation'] !== '') {
+            $html .= '<h6 class="bsm-debug-section-title">' . get_string('debug_obs', 'block_servermon') . '</h6>';
+            $html .= '<div class="bsm-debug-alert bsm-alert-warn">'
+                . htmlspecialchars($d['observation'])
+                . '</div>';
+        }
+
+        return '<details class="bsm-details">'
+            . '<summary class="bsm-summary bsm-summary-debug">' . $label . '</summary>'
+            . '<div class="bsm-debug-body">' . $html . '</div>'
+            . '</details>';
+    }
+
+    /**
+     * Render the four summary metric cards (page time, memory, DB reads/writes, DB time).
+     *
+     * @param array $d Debug metrics array from collect_debug_metrics().
+     * @return string HTML output.
+     */
+    private function render_debug_metric_cards(array $d): string {
+        $unavail = get_string('unavailable', 'block_servermon');
         $html  = '<div class="bsm-debug-grid">';
         $html .= $this->metric_card(
             get_string('debug_pagetime', 'block_servermon'),
@@ -569,17 +685,25 @@ class block_servermon extends block_base {
             $d['dbtime'] !== null ? $d['dbtime'] . ' s' : $unavail
         );
         $html .= '</div>';
+        return $html;
+    }
 
-        // Session handler section.
-        $sess       = $d['session'];
+    /**
+     * Render the session handler info section.
+     *
+     * @param array $sess Session info array from get_session_info().
+     * @return string HTML output.
+     */
+    private function render_debug_session(array $sess): string {
+        $unavail    = get_string('unavailable', 'block_servermon');
         $sessdetail = get_string('debug_session_detail', 'block_servermon', (object)[
             'type' => htmlspecialchars($sess['type']),
             'size' => $sess['size'] ?? $unavail,
             'wait' => $sess['wait'],
         ]);
 
-        $html .= '<h6 class="bsm-debug-section-title">' . get_string('debug_session', 'block_servermon') . '</h6>';
         $sessalert = $sess['type'] === 'file' ? 'bsm-alert-warn' : 'bsm-alert-info';
+        $html  = '<h6 class="bsm-debug-section-title">' . get_string('debug_session', 'block_servermon') . '</h6>';
         $html .= '<div class="bsm-debug-alert ' . $sessalert . '">' . $sessdetail;
 
         if ($sess['type'] === 'file') {
@@ -596,24 +720,7 @@ class block_servermon extends block_base {
             ]);
         }
         $html .= '</div>';
-
-        // Cache store performance.
-        if (!empty($d['cachestats'])) {
-            $html .= $this->render_cache_section($d['cachestats']);
-        }
-
-        // Observation.
-        if ($d['observation'] !== '') {
-            $html .= '<h6 class="bsm-debug-section-title">' . get_string('debug_obs', 'block_servermon') . '</h6>';
-            $html .= '<div class="bsm-debug-alert bsm-alert-warn">'
-                . htmlspecialchars($d['observation'])
-                . '</div>';
-        }
-
-        return '<details class="bsm-details">'
-            . '<summary class="bsm-summary bsm-summary-debug">' . $label . '</summary>'
-            . '<div class="bsm-debug-body">' . $html . '</div>'
-            . '</details>';
+        return $html;
     }
 
     /**
@@ -718,7 +825,7 @@ class block_servermon extends block_base {
      * @return array Keys: pagetime, memory, dbreads, dbwrites, dbtime, session, cachestats, observation.
      */
     private function collect_debug_metrics(): array {
-        global $DB, $CFG;
+        global $DB;
 
         $result = [
             'pagetime'    => null,
@@ -835,50 +942,82 @@ class block_servermon extends block_base {
             'request' => ['hits' => 0, 'misses' => 0, 'bytes' => 0, 'store' => ''],
         ];
 
-        foreach ($raw as $defkey => $data) {
+        foreach ($raw as $data) {
             if (!is_array($data) || empty($data['stores'])) {
                 continue;
             }
-
             $mode = (int)($data['mode'] ?? $modeapp);
-
             foreach ($data['stores'] as $storename => $entry) {
-                if (!is_array($entry)) {
-                    continue;
-                }
-
-                $hits = (int)($entry['hits'] ?? 0);
-                $misses = (int)($entry['misses'] ?? 0);
-                $iobytes = (int)($entry['iobytes'] ?? -1);
-                $bytes      = $iobytes > 0 ? $iobytes : 0;
-                $storeclass = strtolower($entry['class'] ?? $storename);
-
-                if (stripos($storename, 'static') !== false || strpos($storeclass, 'static') !== false) {
-                    $agg['static']['hits']   += $hits;
-                    $agg['static']['misses'] += $misses;
-                    continue;
-                }
-
-                if ($mode === $modeapp) {
-                    $agg['app']['hits']   += $hits;
-                    $agg['app']['misses'] += $misses;
-                    $agg['app']['bytes']  += $bytes;
-                    if (!$agg['app']['store']) {
-                        $agg['app']['store'] = $storeclass;
-                    }
-                } else if ($mode === $modesession) {
-                    $agg['session']['hits']   += $hits;
-                    $agg['session']['misses'] += $misses;
-                    $agg['session']['bytes']  += $bytes;
-                    if (!$agg['session']['store']) {
-                        $agg['session']['store'] = $storeclass;
-                    }
-                } else if ($mode === $moderequest) {
-                    $agg['request']['hits']   += $hits;
-                    $agg['request']['misses'] += $misses;
-                    $agg['request']['bytes']  += $bytes;
-                }
+                $agg = $this->aggregate_cache_store_entry(
+                    $agg,
+                    $storename,
+                    $entry,
+                    $mode,
+                    $modeapp,
+                    $modesession,
+                    $moderequest
+                );
             }
+        }
+
+        return $agg;
+    }
+
+    /**
+     * Aggregate a single cache store entry into the running totals array.
+     *
+     * @param array $agg Running aggregates (static, app, session, request).
+     * @param string $storename Store instance name.
+     * @param mixed $entry Raw entry data from cache_helper::get_stats().
+     * @param int $mode Cache mode for this definition.
+     * @param int $modeapp Application cache mode constant.
+     * @param int $modesession Session cache mode constant.
+     * @param int $moderequest Request cache mode constant.
+     * @return array Updated aggregates.
+     */
+    private function aggregate_cache_store_entry(
+        array $agg,
+        string $storename,
+        $entry,
+        int $mode,
+        int $modeapp,
+        int $modesession,
+        int $moderequest
+    ): array {
+        if (!is_array($entry)) {
+            return $agg;
+        }
+
+        $hits       = (int)($entry['hits'] ?? 0);
+        $misses     = (int)($entry['misses'] ?? 0);
+        $iobytes    = (int)($entry['iobytes'] ?? -1);
+        $bytes      = $iobytes > 0 ? $iobytes : 0;
+        $storeclass = strtolower($entry['class'] ?? $storename);
+
+        if (stripos($storename, 'static') !== false || strpos($storeclass, 'static') !== false) {
+            $agg['static']['hits']   += $hits;
+            $agg['static']['misses'] += $misses;
+            return $agg;
+        }
+
+        if ($mode === $modeapp) {
+            $agg['app']['hits']   += $hits;
+            $agg['app']['misses'] += $misses;
+            $agg['app']['bytes']  += $bytes;
+            if (!$agg['app']['store']) {
+                $agg['app']['store'] = $storeclass;
+            }
+        } else if ($mode === $modesession) {
+            $agg['session']['hits']   += $hits;
+            $agg['session']['misses'] += $misses;
+            $agg['session']['bytes']  += $bytes;
+            if (!$agg['session']['store']) {
+                $agg['session']['store'] = $storeclass;
+            }
+        } else if ($mode === $moderequest) {
+            $agg['request']['hits']   += $hits;
+            $agg['request']['misses'] += $misses;
+            $agg['request']['bytes']  += $bytes;
         }
 
         return $agg;

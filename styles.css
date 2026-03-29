@@ -77,10 +77,21 @@
     transition: width 0.3s ease;
 }
 
-.bsm-bar-fill.bsm-ok       { background-color: #2ecc71; }
-.bsm-bar-fill.bsm-moderate { background-color: #f39c12; }
-.bsm-bar-fill.bsm-high     { background-color: #e74c3c; }
-.bsm-bar-fill.bsm-unknown  { background-color: #95a5a6; }
+.bsm-bar-fill.bsm-ok {
+    background-color: #2ecc71;
+}
+
+.bsm-bar-fill.bsm-moderate {
+    background-color: #f39c12;
+}
+
+.bsm-bar-fill.bsm-high {
+    background-color: #e74c3c;
+}
+
+.bsm-bar-fill.bsm-unknown {
+    background-color: #95a5a6;
+}
 
 /* --- Badges --- */
 .bsm-unavail {
@@ -99,10 +110,21 @@
     border-radius: 2px;
 }
 
-.bsm-badge.bsm-ok       { color: #27ae60; }
-.bsm-badge.bsm-moderate { color: #d68910; }
-.bsm-badge.bsm-high     { color: #c0392b; }
-.bsm-badge.bsm-unknown  { color: #7f8c8d; }
+.bsm-badge.bsm-ok {
+    color: #27ae60;
+}
+
+.bsm-badge.bsm-moderate {
+    color: #d68910;
+}
+
+.bsm-badge.bsm-high {
+    color: #c0392b;
+}
+
+.bsm-badge.bsm-unknown {
+    color: #7f8c8d;
+}
 
 /* --- Collapsible info section --- */
 .bsm-details {
@@ -299,8 +321,8 @@
 
 .bsm-percore-track {
     flex: 1;
-    height: 4px !important;
-    margin: 0 !important;
+    height: 4px;
+    margin: 0;
 }
 
 .bsm-percore-pct {
