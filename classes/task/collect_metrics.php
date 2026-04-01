@@ -135,7 +135,9 @@ class collect_metrics extends \core\task\scheduled_task {
         if (!function_exists('disk_total_space')) {
             return null;
         }
-        $path  = $islinux ? '/' : 'C:\\\\';
+        $configured = get_config('block_servermon', 'disk_path');
+        $default    = $islinux ? '/' : 'C:\\\\';
+        $path       = (!empty($configured) && is_readable($configured)) ? $configured : $default;
         $total = @disk_total_space($path);
         $free  = @disk_free_space($path);
         if (!$total || !$free || $total <= 0) {

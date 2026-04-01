@@ -59,7 +59,7 @@ class block_servermon extends block_base {
      * @return bool
      */
     public function has_config(): bool {
-        return false;
+        return true;
     }
 
     /**
@@ -306,7 +306,9 @@ class block_servermon extends block_base {
             return $result;
         }
 
-        $path  = $islinux ? '/' : 'C:\\';
+        $configured = get_config('block_servermon', 'disk_path');
+        $default    = $islinux ? '/' : 'C:\\';
+        $path       = (!empty($configured) && is_readable($configured)) ? $configured : $default;
         $total = @disk_total_space($path);
         $free  = @disk_free_space($path);
 
