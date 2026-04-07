@@ -15,7 +15,7 @@
 // along with Moodle.  If not, see <http://www.gnu.org/licenses/>.
 
 /**
- * Server Monitor block for Moodle 5.x.
+ * Server Monitor block for Moodle 4.5+.
  *
  * Displays CPU load, RAM usage, disk space, uptime and server info
  * on the admin Dashboard. Visible to site administrators only.
@@ -480,6 +480,7 @@ class block_servermon extends block_base {
         $html .= $this->render_metric_row('cpu', $m['cpu']);
         $html .= $this->render_metric_row('ram', $m['ram']);
         $html .= $this->render_metric_row('disk', $m['disk']);
+        $html .= $this->render_process_section();
         $html .= '<details class="bsm-details">';
         $html .= '<summary class="bsm-summary">' . $togglelabel . '</summary>';
         $html .= $this->render_info_table($m);
@@ -597,6 +598,138 @@ class block_servermon extends block_base {
         }
         $html .= '</div>';
         return $html;
+    }
+
+    /**
+     * Render the collapsible top-processes section with live AJAX polling.
+     *
+     * Uses JavaScript fetch() + setInterval() to refresh every 5 seconds
+     * while the <details> panel is open. Polling stops when the panel closes.
+     *
+     * @return string HTML output.
+     */
+    private function render_process_section(): string {
+        $instanceid = $this->instance->id;
+        $url        = (new \moodle_url('/blocks/servermon/process.php'))->out(false);
+        $label      = get_string('proc_toggle', 'block_servermon');
+        $loadingmsg = get_string('proc_loading', 'block_servermon');
+        $emptymsg   = get_string('proc_empty', 'block_servermon');
+        $errormsg   = get_string('proc_error', 'block_servermon');
+        $hpid       = get_string('proc_pid', 'block_servermon');
+        $hname      = get_string('proc_name', 'block_servermon');
+        $hcpu       = get_string('proc_cpu', 'block_servermon');
+        $hmem       = get_string('proc_mem', 'block_servermon');
+
+        // Inline JS is intentionally narrow: read-only AJAX poll, no user input.
+        // phpcs:disable moodle.Files.InlineJavaScript.Found
+        $js = <<<JSEOF
+(function() {
+    var url = {$this->json_encode_url($url)};
+    var elId = 'bsm-proctable-{$instanceid}';
+    var detId = 'bsm-proc-details-{$instanceid}';
+    var emptyMsg = {$this->js_string($emptymsg)};
+    var errorMsg = {$this->js_string($errormsg)};
+    var hPid    = {$this->js_string($hpid)};
+    var hName   = {$this->js_string($hname)};
+    var hCpu    = {$this->js_string($hcpu)};
+    var hMem    = {$this->js_string($hmem)};
+    var el, details, timer;
+
+    function esc(s) {
+        return String(s)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;');
+    }
+
+    function render(data) {
+        if (!data || !Array.isArray(data.processes) || data.processes.length === 0) {
+            el.innerHTML = '<div class="bsm-proc-empty">' + emptyMsg + '</div>';
+            return;
+        }
+        var html = '<table class="bsm-proc-table">'
+            + '<thead><tr>'
+            + '<th class="bsm-proc-pid">'  + hPid  + '</th>'
+            + '<th class="bsm-proc-name">' + hName + '</th>'
+            + '<th class="bsm-proc-num">'  + hCpu  + '</th>'
+            + '<th class="bsm-proc-num">'  + hMem  + '</th>'
+            + '</tr></thead><tbody>';
+        data.processes.forEach(function(p) {
+            html += '<tr>'
+                + '<td class="bsm-proc-pid">'  + esc(p.pid)     + '</td>'
+                + '<td class="bsm-proc-name">' + esc(p.name)    + '</td>'
+                + '<td class="bsm-proc-num">'  + esc(p.cpu_pct) + '%</td>'
+                + '<td class="bsm-proc-num">'  + esc(p.mem_pct) + '%</td>'
+                + '</tr>';
+        });
+        html += '</tbody></table>';
+        el.innerHTML = html;
+    }
+
+    function poll() {
+        fetch(url, {credentials: 'same-origin'})
+            .then(function(r) { return r.json(); })
+            .then(render)
+            .catch(function() {
+                el.innerHTML = '<div class="bsm-proc-empty">' + errorMsg + '</div>';
+            });
+    }
+
+    function init() {
+        el      = document.getElementById(elId);
+        details = document.getElementById(detId);
+        if (!el || !details) { return; }
+
+        details.addEventListener('toggle', function() {
+            if (details.open) {
+                poll();
+                timer = setInterval(poll, 5000);
+            } else {
+                clearInterval(timer);
+                timer = null;
+            }
+        });
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', init);
+    } else {
+        init();
+    }
+})();
+JSEOF;
+        // phpcs:enable
+        $this->page->requires->js_init_code($js, true);
+
+        $containerid = 'bsm-proctable-' . $instanceid;
+        $detailsid   = 'bsm-proc-details-' . $instanceid;
+
+        return '<details class="bsm-details" id="' . $detailsid . '">'
+            . '<summary class="bsm-summary">' . $label . '</summary>'
+            . '<div id="' . $containerid . '" class="bsm-proc-container">'
+            . '<div class="bsm-proc-loading">' . $loadingmsg . '</div>'
+            . '</div>'
+            . '</details>';
+    }
+
+    /**
+     * JSON-encode a URL string for safe embedding in JavaScript.
+     *
+     * @param string $url The URL to encode.
+     * @return string A JSON-encoded string literal (including surrounding quotes).
+     */
+    private function json_encode_url(string $url): string {
+        return json_encode($url, JSON_UNESCAPED_SLASHES | JSON_HEX_TAG);
+    }
+
+    /**
+     * Encode a plain string as a safe JavaScript string literal.
+     *
+     * @param string $s The string to encode.
+     * @return string A JSON-encoded string literal (including surrounding quotes).
+     */
+    private function js_string(string $s): string {
+        return json_encode($s, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_AMP | JSON_HEX_QUOT);
     }
 
     /**

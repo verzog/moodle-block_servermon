@@ -333,6 +333,74 @@
     flex-shrink: 0;
 }
 
+/* --- Top-processes panel --- */
+
+.bsm-proc-container {
+    margin-top: 0.35rem;
+}
+
+.bsm-proc-loading,
+.bsm-proc-empty {
+    font-size: 0.74rem;
+    opacity: 0.55;
+    font-style: italic;
+    padding: 0.3rem 0;
+}
+
+.bsm-proc-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.74rem;
+    margin-top: 0.2rem;
+}
+
+.bsm-proc-table thead tr {
+    border-bottom: 1px solid rgba(128, 128, 128, 0.2);
+}
+
+.bsm-proc-table th {
+    font-size: 0.68rem;
+    font-weight: 600;
+    opacity: 0.55;
+    padding: 0.2rem 0.3rem;
+    text-align: left;
+}
+
+.bsm-proc-table td {
+    padding: 0.25rem 0.3rem;
+    vertical-align: middle;
+    border-bottom: 1px solid rgba(128, 128, 128, 0.07);
+}
+
+.bsm-proc-table tbody tr:last-child td {
+    border-bottom: none;
+}
+
+.bsm-proc-table tbody tr:hover {
+    background: rgba(128, 128, 128, 0.07);
+}
+
+.bsm-proc-pid {
+    width: 3rem;
+    font-variant-numeric: tabular-nums;
+    opacity: 0.55;
+}
+
+.bsm-proc-name {
+    font-weight: 500;
+    max-width: 10rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.bsm-proc-num {
+    width: 3.5rem;
+    text-align: right;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+}
+
 /* --- CSV export link --- */
 
 .bsm-csv-link {
