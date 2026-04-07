@@ -78,25 +78,25 @@ function bsm_get_processes_via_proc(): array {
             $hz = $ticks;
         }
     }
-    $elapsed_ticks = 0.2 * $hz;
+    $elapsedTicks = 0.2 * $hz;
 
-    $mem_total_kb = bsm_read_mem_total_kb();
+    $memTotalKb = bsm_read_mem_total_kb();
 
     $processes = [];
     foreach ($snap2 as $pid => $s2) {
         if (!isset($snap1[$pid])) {
             continue; // Process started after snap1 — skip.
         }
-        $s1      = $snap1[$pid];
-        $delta   = $s2['cpu_ticks'] - $s1['cpu_ticks'];
-        $cpu_pct = $elapsed_ticks > 0 ? round(($delta / $elapsed_ticks) * 100, 1) : 0.0;
-        $mem_pct = $mem_total_kb > 0 ? round(($s2['rss_kb'] / $mem_total_kb) * 100, 1) : 0.0;
+        $s1     = $snap1[$pid];
+        $delta  = $s2['cpu_ticks'] - $s1['cpu_ticks'];
+        $cpuPct = $elapsedTicks > 0 ? round(($delta / $elapsedTicks) * 100, 1) : 0.0;
+        $memPct = $memTotalKb > 0 ? round(($s2['rss_kb'] / $memTotalKb) * 100, 1) : 0.0;
 
         $processes[] = [
             'pid'     => (int) $pid,
             'name'    => $s2['name'],
-            'cpu_pct' => max(0.0, $cpu_pct),
-            'mem_pct' => $mem_pct,
+            'cpu_pct' => max(0.0, $cpuPct),
+            'mem_pct' => $memPct,
         ];
     }
 
@@ -146,19 +146,19 @@ function bsm_scan_proc_stats(): array {
         $stime = (int) $m[4];
 
         // RSS from /proc/[pid]/status (VmRSS line).
-        $rss_kb     = 0;
+        $rssKb      = 0;
         $statusfile = $dir . '/status';
         if (is_readable($statusfile)) {
             $status = @file_get_contents($statusfile);
             if ($status && preg_match('/^VmRSS:\s+(\d+)\s+kB/im', $status, $rm)) {
-                $rss_kb = (int) $rm[1];
+                $rssKb = (int) $rm[1];
             }
         }
 
         $result[$pid] = [
             'name'      => $m[2],
             'cpu_ticks' => $utime + $stime,
-            'rss_kb'    => $rss_kb,
+            'rss_kb'    => $rssKb,
         ];
     }
 
