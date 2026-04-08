@@ -1,0 +1,40 @@
+<p>A lightweight admin Dashboard block that gives Moodle site administrators a live view of server health — CPU, RAM, disk, top processes, Moodle page-performance metrics, cache store stats, session info, and historical metric logging with CSV export. All data is visible only to site administrators.</p>
+
+<h4>Resource gauges</h4>
+<p>Three colour-coded progress bars (green / amber / red at 60% / 80%) show at a glance:</p>
+<ul>
+  <li><strong>CPU</strong> — aggregate % from a 500 ms <code>/proc/stat</code> two-sample delta, plus per-core breakdown bars and 1m/5m/15m load averages</li>
+  <li><strong>RAM</strong> — used / free / total in GB from <code>/proc/meminfo</code></li>
+  <li><strong>Disk</strong> — used / free / total in GB for a configurable mount point (useful when Moodle data is on a separate partition such as <code>/data</code>)</li>
+</ul>
+
+<h4>Top processes by CPU</h4>
+<p>A collapsible panel that polls the server every 5 seconds via AJAX while open and stops when collapsed. Displays PID, process name, CPU%, and MEM% for the top 5 processes. Reads <code>/proc/[pid]/stat</code> directly with a 200 ms sample window; falls back to <code>ps aux</code> if <code>/proc</code> is unavailable.</p>
+
+<h4>Moodle debug footer — key metrics</h4>
+<p>A collapsible panel showing Moodle page-performance data for the current request:</p>
+<ul>
+  <li>Page load time, peak memory usage, DB read/write counts, total DB query time</li>
+  <li>Session handler type (file / Redis / Memcached / database), session size, and full Redis connection details when Redis sessions are active</li>
+  <li>MUC cache store performance — hits, misses, and I/O bytes broken down by static, application, session, and request caches</li>
+  <li>Advisory note if the application cache miss rate is high</li>
+</ul>
+
+<h4>Metric logging and CSV export</h4>
+<p>A scheduled task records CPU (per-core %), RAM%, and disk% once per minute to a lightweight database table. A <em>Download metrics CSV (last 7 days)</em> link appears at the bottom of the block when data is available. The CSV includes a UTF-8 BOM for clean opening in Microsoft Excel, with one column per CPU core.</p>
+
+<h4>Hosting type detection</h4>
+<p>A best-effort heuristic identifies the server environment using six signal layers: control-panel fingerprints (cPanel, Plesk, DirectAdmin, Webmin, ISPConfig, HestiaCP, etc.), cloud provider detection via DMI vendor strings (AWS, Azure, GCP, DigitalOcean, Hetzner, Vultr, Linode, OVH), virtualisation type (KVM, VMware, Xen, Hyper-V, LXC/Docker), bare-metal chassis codes, OS fingerprint, and a resource-based score fallback.</p>
+
+<h4>Admin settings</h4>
+<p>A single setting under <strong>Site Administration → Plugins → Blocks → Server Monitor</strong> lets you specify the disk path to monitor (default <code>/</code>). This also applies to the scheduled task so logged values match what is displayed.</p>
+
+<h4>Requirements</h4>
+<ul>
+  <li>Moodle 4.5 or higher</li>
+  <li>PHP 8.1 or higher</li>
+  <li>Linux server recommended (Windows Server supported with reduced functionality)</li>
+</ul>
+
+<h4>Security</h4>
+<p>Block content, the AJAX process endpoint, and the CSV export endpoint all require the <code>moodle/site:config</code> capability. No other user sees any output. No personal data is stored — the metric log records server-level values only.</p>
