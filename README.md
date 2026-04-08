@@ -1,12 +1,12 @@
 # Server Monitor Block for Moodle (`block_servermon`)
 
-A lightweight Moodle block that displays live server health metrics on the admin Dashboard. Designed as a simple open-source alternative to plugins like Edwiser Site Monitor.
+A lightweight Moodle block that displays live server health metrics on the admin Dashboard. Covers CPU, RAM, disk, top processes, Moodle page-performance metrics, cache store health, session info, and historical metric logging with CSV export.
 
 ---
 
 ## Requirements
 
-- Moodle 5.0 or higher
+- Moodle 4.5 or higher
 - PHP 8.1 or higher
 - Linux-based server recommended (Windows Server is supported but most metrics will show as unavailable)
 - Site administrator role to view the block
@@ -33,9 +33,9 @@ Three colour-coded progress bars are shown at the top of the block:
 
 | Metric | Source | Notes |
 |---|---|---|
-| **CPU Load** | `/proc/cpuinfo`, `sys_getloadavg()` | Shows current load as % of total CPU capacity, plus 1m/5m/15m load averages |
-| **Memory (RAM)** | `/proc/meminfo` | Shows used/free/total in GB |
-| **Disk Space** | `disk_total_space()`, `disk_free_space()` | Shows used/free/total in GB for the root partition |
+| **CPU Load** | `/proc/stat` (two-sample delta, 500 ms) | Aggregate CPU% plus per-core breakdown bars; 1m/5m/15m load averages shown below |
+| **Memory (RAM)** | `/proc/meminfo` | Used/free/total in GB |
+| **Disk Space** | `disk_total_space()`, `disk_free_space()` | Used/free/total in GB for the configured mount point (default `/`) |
 
 #### Status colours
 
@@ -47,6 +47,25 @@ Three colour-coded progress bars are shown at the top of the block:
 
 ---
 
+### Top Processes by CPU
+
+Collapsed by default. Click **Top processes by CPU ▾** to expand.
+
+Once open, the panel polls the server every **5 seconds** via a lightweight AJAX request and renders a live table:
+
+| Column | Description |
+|---|---|
+| **PID** | Process ID |
+| **Process** | Command name (truncated to 15 chars by the kernel) |
+| **CPU%** | CPU usage over the last ~200 ms sample window |
+| **MEM%** | Resident set size as a percentage of total RAM |
+
+The poll stops automatically when you collapse the panel to avoid unnecessary background requests.
+
+**How it works:** The AJAX endpoint (`process.php`) reads all `/proc/[pid]/stat` files twice with a 200 ms gap and calculates per-process CPU% from the tick delta, mirroring what `ps` does internally. On servers where `/proc` is unavailable, it falls back to `ps aux --sort=-%cpu` via `shell_exec()` if that function is permitted.
+
+---
+
 ### Server Info Panel
 
 Collapsed by default. Click **Server Info ▾** to expand. Contains:
@@ -55,11 +74,82 @@ Collapsed by default. Click **Server Info ▾** to expand. Contains:
 |---|---|
 | **Server Uptime** | How long the server has been running since last reboot, read from `/proc/uptime` |
 | **PHP Version** | The PHP version Moodle is currently running on |
-| **Database** | Database engine family and version, read from Moodle's `$DB` object (e.g. `PostgreSQL 15.4`, `MySQL 8.0.32`) |
+| **OS** | The OS platform string (`PHP_OS`) |
 | **Hostname** | The server's hostname as returned by `gethostname()` |
 | **Web Server** | The web server software (e.g. Apache, Nginx), read from `$_SERVER['SERVER_SOFTWARE']` |
 | **Hosting Type** | A heuristic estimate of the hosting environment (see below) |
 | **Last Checked** | The timestamp when the block last rendered — data is live on each page load |
+
+---
+
+### Moodle Debug Footer — Key Metrics
+
+Collapsed by default. Click **Moodle debug footer — key metrics ▾** to expand. Shows Moodle page-performance data for the current request:
+
+#### Summary cards
+
+| Card | Description |
+|---|---|
+| **Page Time** | Seconds elapsed since `REQUEST_TIME_FLOAT` |
+| **Peak Memory** | PHP peak memory usage for this request (MB) |
+| **DB Reads / Writes** | Number of SELECT and write queries issued by Moodle on this page load |
+| **DB Query Time** | Total time spent in database queries (seconds) |
+
+#### Session handler
+
+Shows the active session backend type (file, Redis, Memcached, or database), the serialised size of the current session, and lock wait time. If Redis is detected, the full connection configuration is displayed:
+
+- Host, port, database index
+- Key prefix
+- Lock timeout and lock expiry settings
+
+A warning is shown if the file-based session handler is in use, as this can become a bottleneck under load.
+
+#### Cache store performance
+
+Shows hit/miss counts and I/O bytes across the four MUC cache modes:
+
+| Row | Description |
+|---|---|
+| **Static cache** | In-process PHP static cache |
+| **Application cache** | Persistent store (Redis, APCu, or file) |
+| **Session cache** | Per-session store |
+| **Request cache** | Single-request in-memory store |
+
+If the application cache miss rate exceeds 50% and the store is file-based, an advisory note suggests adding Redis or APCu.
+
+---
+
+### Metric Logging & CSV Export
+
+The block records server metrics once per minute to a lightweight database table (`block_servermon_log`). A **Download metrics CSV (last 7 days)** link appears at the bottom of the block when log records exist.
+
+#### What is logged
+
+| Column | Description |
+|---|---|
+| `timestamp` | UTC time of the sample |
+| `cpu_core0_pct` … `cpu_coreN_pct` | Per-core CPU% (one column per physical core) |
+| `ram_pct` | RAM used as a percentage of total |
+| `disk_pct` | Disk used as a percentage of total (for the configured disk path) |
+
+The CSV includes a UTF-8 BOM for clean opening in Microsoft Excel.
+
+#### Scheduled task
+
+A scheduled task (`collect_metrics`) runs every minute to write samples independently of page loads. It uses the same `/proc/stat` sampling logic as the live block display.
+
+---
+
+## Admin Settings
+
+Go to **Site Administration → Plugins → Blocks → Server Monitor** to configure:
+
+| Setting | Default | Description |
+|---|---|---|
+| **Disk path** | `/` | The filesystem path used for disk space reporting. Set this to your data mount point (e.g. `/data`) if your Moodle `moodledata` directory is on a separate partition. |
+
+This setting also applies to the scheduled task so that logged disk metrics reflect the same mount point shown in the block.
 
 ---
 
@@ -111,7 +201,7 @@ Reads `/sys/class/dmi/id/chassis_type`. Chassis codes 17 (Rack Mount), 23 (Blade
 
 **Layer 5 — OS fingerprint**
 
-Reads `/etc/os-release`, `/etc/debian_version`, or `/etc/redhat-release` for the Linux distribution name and version. Shown as a signal detail only (e.g. `Debian GNU/Linux 12 (bookworm)`).
+Reads `/etc/os-release`, `/etc/debian_version`, or `/etc/redhat-release` for the Linux distribution name and version.
 
 **Layer 6 — Resource-based scoring (final fallback)**
 
@@ -132,7 +222,6 @@ Only used if no label was set by layers 1–4. Scores based on CPU count, RAM, `
 The following are **not available via SQL or PHP** and therefore cannot be shown by this block:
 
 - Network I/O (bandwidth in/out)
-- Per-process CPU breakdown
 - GPU usage
 - Temperature sensors
 
@@ -140,23 +229,19 @@ The following are **not available via SQL or PHP** and therefore cannot be shown
 
 Some shared hosting providers restrict access to `/proc/meminfo`, `/proc/cpuinfo`, or `sys_getloadavg()`. If your host blocks these, the affected metrics will display as **Unavailable**. This is a hosting-level restriction and cannot be worked around from within a Moodle plugin.
 
-### Data is not historical
-
-The block reads live values at the moment the Dashboard page loads. It does not store historical data or generate graphs over time. For historical monitoring, consider a dedicated server monitoring tool such as Netdata, Munin, or Glances.
-
 ---
 
 ## Visibility & Security
 
 - The block content is **only rendered for site administrators**. Any other user who somehow has the block on their dashboard will see nothing.
-- No data is written to the Moodle database by this block.
+- The AJAX process endpoint (`process.php`) and the CSV export endpoint (`export.php`) both require the `moodle/site:config` capability and will return an error for any other user.
 - No personal data is collected or stored (see Privacy section below).
 
 ---
 
 ## Privacy
 
-This block stores no personal data of any kind. It reads server-level OS metrics only. The Moodle privacy API null provider is implemented accordingly.
+This block collects no personal data. The metric log table records only server-level OS metrics (CPU%, RAM%, disk%) with a timestamp. No usernames, IP addresses, or session identifiers are stored. The Moodle privacy API null provider is implemented accordingly.
 
 ---
 
@@ -164,10 +249,10 @@ This block stores no personal data of any kind. It reads server-level OS metrics
 
 | Component | Requirement |
 |---|---|
-| Moodle | 5.0+ |
+| Moodle | 4.5+ |
 | PHP | 8.1+ |
-| Database | MySQL, MariaDB, PostgreSQL (block does not query the DB directly) |
-| OS | Linux (full support), Windows Server (partial — gauges unavailable) |
+| Database | MySQL, MariaDB, PostgreSQL |
+| OS | Linux (full support), Windows Server (gauges unavailable) |
 | Theme | Any Moodle theme |
 
 ---
@@ -177,17 +262,23 @@ This block stores no personal data of any kind. It reads server-level OS metrics
 **The CPU/RAM/Disk shows "Unavailable" — is the plugin broken?**
 No. Your hosting provider has restricted access to the OS-level files the block reads from. This is common on shared hosting. The block itself is working correctly.
 
+**The Top Processes panel is empty.**
+Either `/proc` is not readable (restricted hosting) or `shell_exec()` is disabled. Both are hosting-level restrictions. The block will show "No process data available" rather than an error.
+
+**The CPU% shows over 100%.**
+The block displays aggregate CPU% across all cores from a `/proc/stat` two-sample delta, so 100% is the maximum. If you see very high values, check the per-core breakdown bars below the main CPU bar — one or more cores may be fully saturated.
+
+**The disk space looks wrong.**
+If your Moodle data directory is on a separate partition (e.g. `/data`), configure the **Disk path** setting under **Site Administration → Plugins → Blocks → Server Monitor** to point to that mount point.
+
 **Why does the Hosting Type say "unconfirmed"?**
-Because it genuinely cannot be confirmed from within PHP alone. The label is a heuristic estimate based on available signals, not a definitive answer. See the Hosting Type Detection section above for full details.
+Because it genuinely cannot be confirmed from within PHP alone. The label is a heuristic estimate. See the Hosting Type Detection section for full details.
 
 **Can I add this block to pages other than the Dashboard?**
 No — the block is restricted to My Dashboard (`applicable_formats`) by design. This keeps sensitive server information away from course pages.
 
 **Will this slow down my Moodle site?**
-Extremely unlikely. All data is read from OS memory-mapped files or built-in PHP functions. The total execution time per page load is under a millisecond on any modern server. No database queries are performed.
-
-**The Hosting Type score seems wrong for my setup.**
-This is expected in some cases — see the "Why this can be wrong" section above. The signal reasons shown under the label should help you understand what the block detected.
+Minimally. The main block render reads from OS memory-mapped files and runs a 500 ms CPU sample. The process panel only polls when open. Metric logging is rate-limited to once per minute and runs via a scheduled task. No expensive queries are performed.
 
 ---
 
