@@ -157,7 +157,7 @@ function bsm_scan_proc_stats(): array {
         $result[$pid] = [
             'name'      => $m[2],
             'cpu_ticks' => $utime + $stime,
-            'rss_kb'    => $rssKb,
+            'rss_kb'    => $rsskb,
         ];
     }
 
