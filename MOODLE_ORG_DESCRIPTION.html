@@ -6,8 +6,9 @@ administrators.</p>
 <h4>Resource gauges</h4>
 <p>Three colour-coded progress bars (green / amber / red at 60% / 80%) show at a glance:</p>
 <ul>
-  <li><strong>CPU</strong> — aggregate % from a 500 ms <code>/proc/stat</code> two-sample delta,
-      plus per-core breakdown bars and 1m/5m/15m load averages</li>
+  <li><strong>CPU</strong> — aggregate % from the most recent scheduled-task snapshot (falling
+      back to a live 500 ms <code>/proc/stat</code> two-sample delta), plus per-core breakdown
+      bars and 1m/5m/15m load averages</li>
   <li><strong>RAM</strong> — used / free / total in GB from <code>/proc/meminfo</code></li>
   <li><strong>Disk</strong> — used / free / total in GB for a configurable mount point (useful when
       Moodle data is on a separate partition such as <code>/data</code>)</li>
@@ -33,17 +34,15 @@ with the process responsible.</p>
 </ul>
 
 <h4>Metric logging and CSV export</h4>
-<p>A scheduled task records CPU (per-core %), RAM%, and disk% once per minute to a lightweight
+<p>A scheduled task records CPU (per-core %), RAM%, and disk% every 5 minutes to a lightweight
 database table. A <em>Download metrics CSV (last 7 days)</em> link appears at the bottom of the
-block when data is available. The CSV includes a UTF-8 BOM for clean opening in Microsoft Excel,
-with one column per CPU core.</p>
+block when data is available, with one column per CPU core.</p>
 
 <h4>Hosting type detection</h4>
-<p>A best-effort heuristic identifies the server environment using six signal layers:
-control-panel fingerprints (cPanel, Plesk, DirectAdmin, Webmin, ISPConfig, HestiaCP, etc.),
-cloud provider detection via DMI vendor strings (AWS, Azure, GCP, DigitalOcean, Hetzner, Vultr,
-Linode, OVH), virtualisation type (KVM, VMware, Xen, Hyper-V, LXC/Docker), bare-metal chassis
-codes, OS fingerprint, and a resource-based score fallback.</p>
+<p>A best-effort resource-scoring heuristic estimates the server environment (shared hosting,
+small VPS, or VPS/dedicated) from visible CPU cores, RAM, <code>/proc</code> readability, and the
+PHP process owner. The label is always marked as unconfirmed and the matched signals are listed
+so administrators can see why the guess was made.</p>
 
 <h4>Admin settings</h4>
 <p>A single setting under <strong>Site Administration → Plugins → Blocks → Server Monitor</strong>
@@ -52,8 +51,8 @@ scheduled task so logged values match what is displayed.</p>
 
 <h4>Requirements</h4>
 <ul>
-  <li>Moodle 4.5 or higher</li>
-  <li>PHP 8.1 or higher</li>
+  <li>Moodle 5.0 or higher</li>
+  <li>PHP 8.2 or higher</li>
   <li>Linux server recommended (Windows Server supported with reduced functionality)</li>
 </ul>
 
