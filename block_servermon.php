@@ -1,5 +1,5 @@
 <?php
-// This file is part of Moodle - http://moodle.org/
+// This file is part of Moodle - https://moodle.org/
 //
 // Moodle is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -12,17 +12,17 @@
 // GNU General Public License for more details.
 //
 // You should have received a copy of the GNU General Public License
-// along with Moodle.  If not, see <http://www.gnu.org/licenses/>.
+// along with Moodle.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Server Monitor block for Moodle 4.5+.
+ * Server Monitor block for Moodle 5.0+.
  *
  * Displays CPU load, RAM usage, disk space, uptime and server info
  * on the admin Dashboard. Visible to site administrators only.
  *
  * @package   block_servermon
  * @copyright 2026 Vernon Spain
- * @license   http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
+ * @license   https://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
 
 /**
@@ -30,7 +30,7 @@
  *
  * @package   block_servermon
  * @copyright 2026 Vernon Spain
- * @license   http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
+ * @license   https://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
 class block_servermon extends block_base {
     // Moodle block lifecycle methods.
@@ -54,7 +54,7 @@ class block_servermon extends block_base {
     }
 
     /**
-     * This block has no site-wide configuration form.
+     * This block has a site-wide configuration form (settings.php).
      *
      * @return bool
      */
@@ -126,11 +126,13 @@ class block_servermon extends block_base {
     }
 
     /**
-     * Read CPU usage via /proc/stat two-sample delta (0.5 s interval).
+     * Read CPU usage, preferring the latest scheduled-task snapshot.
      *
-     * Returns aggregate usage percentage plus per-core breakdown.
-     * Load averages are collected as supplementary context.
-     * Falls back gracefully if /proc/stat is unreadable.
+     * Uses the most recent block_servermon_log row (max 10 minutes old)
+     * so page render is not blocked by a live two-sample /proc/stat read.
+     * Falls back to live sampling when no fresh snapshot exists, and
+     * degrades gracefully if /proc/stat is unreadable.
+     * Load averages are always collected live as supplementary context.
      *
      * @param bool $islinux Whether the server is running Linux.
      * @return array Keys: pct, load1, load5, load15, cores, percore.
@@ -151,11 +153,60 @@ class block_servermon extends block_base {
 
         $result = array_merge($result, $this->get_load_averages());
 
+        $logged = $this->get_cpu_from_log();
+        if ($logged !== null) {
+            return array_merge($result, $logged);
+        }
+
         if (!is_readable('/proc/stat')) {
             return $result;
         }
 
         return array_merge($result, $this->get_cpu_percore_stats());
+    }
+
+    /**
+     * Read the most recent CPU snapshot recorded by the scheduled task.
+     *
+     * @return array|null Keys: pct, cores, percore — or null when no
+     *                    snapshot newer than 10 minutes is available.
+     */
+    private function get_cpu_from_log(): ?array {
+        global $DB;
+
+        if (!$DB->get_manager()->table_exists('block_servermon_log')) {
+            return null;
+        }
+
+        $rows = $DB->get_records_select(
+            'block_servermon_log',
+            'timecreated >= :cutoff',
+            ['cutoff' => time() - 600],
+            'timecreated DESC',
+            '*',
+            0,
+            1
+        );
+        $row = reset($rows);
+        if (!$row || empty($row->cpu_percore)) {
+            return null;
+        }
+
+        $values = json_decode($row->cpu_percore, true);
+        if (!is_array($values) || empty($values)) {
+            return null;
+        }
+
+        $percore = [];
+        foreach (array_values($values) as $i => $pct) {
+            $percore[] = ['core' => $i, 'pct' => (float) $pct];
+        }
+
+        return [
+            'pct'     => round(array_sum($values) / count($values), 1),
+            'cores'   => count($values),
+            'percore' => $percore,
+        ];
     }
 
     /**
@@ -245,10 +296,12 @@ class block_servermon extends block_base {
      */
     private function calc_cpu_pct(array $s1, array $s2): ?float {
         // Tick positions: user, nice, system, idle, iowait, irq, softirq, steal.
+        // Guest/guest_nice (fields 8-9) are already counted in user/nice,
+        // so only the first eight fields are summed to avoid double counting.
         $idle1  = ($s1[3] ?? 0) + ($s1[4] ?? 0); // Idle + iowait.
         $idle2  = ($s2[3] ?? 0) + ($s2[4] ?? 0);
-        $total1 = array_sum($s1);
-        $total2 = array_sum($s2);
+        $total1 = array_sum(array_slice($s1, 0, 8));
+        $total2 = array_sum(array_slice($s2, 0, 8));
 
         $dtotal = $total2 - $total1;
         $didle = $idle2 - $idle1;
@@ -357,7 +410,7 @@ class block_servermon extends block_base {
      */
     private function get_hosting_type(bool $islinux): array {
         if (!$islinux) {
-            return ['label' => 'Windows Server (unconfirmed)', 'reasons' => []];
+            return ['label' => get_string('hosting_windows', 'block_servermon'), 'reasons' => []];
         }
 
         $score   = 0;
@@ -377,12 +430,12 @@ class block_servermon extends block_base {
 
         if (is_readable('/proc/net/dev')) {
             $score++;
-            $reasons[] = '/proc/net/dev readable';
+            $reasons[] = get_string('hosting_reason_netdev', 'block_servermon');
         }
 
         if (file_exists('/etc/hostname')) {
             $score++;
-            $reasons[] = '/etc/hostname present';
+            $reasons[] = get_string('hosting_reason_hostname', 'block_servermon');
         }
 
         [$userscore, $userreason] = $this->hosting_score_user();
@@ -407,7 +460,7 @@ class block_servermon extends block_base {
         preg_match_all('/^processor\s*:/m', $cpuinfo, $matches);
         $cores = max(1, count($matches[0]));
         if ($cores >= 2) {
-            return [1, "{$cores} CPU cores visible"];
+            return [1, get_string('hosting_reason_cores', 'block_servermon', $cores)];
         }
         return [0, null];
     }
@@ -428,7 +481,7 @@ class block_servermon extends block_base {
         }
         $rammb = (int) $m[1] / 1024;
         if ($rammb >= 900) {
-            return [1, round($rammb / 1024, 1) . ' GB RAM'];
+            return [1, get_string('hosting_reason_ram', 'block_servermon', round($rammb / 1024, 1))];
         }
         return [0, null];
     }
@@ -444,7 +497,7 @@ class block_servermon extends block_base {
         }
         $user = posix_getpwuid(posix_geteuid());
         if ($user && !in_array($user['name'], ['nobody', 'www-data', 'apache', 'nginx'])) {
-            return [1, 'Running as ' . $user['name']];
+            return [1, get_string('hosting_reason_user', 'block_servermon', $user['name'])];
         }
         return [0, null];
     }
@@ -457,12 +510,12 @@ class block_servermon extends block_base {
      */
     private function hosting_label_from_score(int $score): string {
         if ($score >= 3) {
-            return 'Likely VPS or Dedicated (unconfirmed)';
+            return get_string('hosting_vps', 'block_servermon');
         }
         if ($score >= 1) {
-            return 'Likely Shared Hosting or small VPS (unconfirmed)';
+            return get_string('hosting_shared_small', 'block_servermon');
         }
-        return 'Likely Shared Hosting (unconfirmed)';
+        return get_string('hosting_shared', 'block_servermon');
     }
 
     // Rendering.
@@ -560,7 +613,7 @@ class block_servermon extends block_base {
             return '<div class="bsm-detail">' . $detail . '</div>';
         }
         if (in_array($type, ['ram', 'disk']) && $data['total'] !== null) {
-            $detail = get_string('ram_detail', 'block_servermon', (object)[
+            $detail = get_string($type . '_detail', 'block_servermon', (object)[
                 'used'  => $data['used'],
                 'total' => $data['total'],
                 'free'  => $data['free'],
@@ -637,39 +690,58 @@ class block_servermon extends block_base {
     var hCore   = {$this->js_string($hcore)};
     var el, details, timer;
 
-    function esc(s) {
-        return String(s)
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;');
+    function clearEl() {
+        while (el.firstChild) {
+            el.removeChild(el.firstChild);
+        }
+    }
+
+    function showMessage(text) {
+        clearEl();
+        var div = document.createElement('div');
+        div.className = 'bsm-proc-empty';
+        div.textContent = text;
+        el.appendChild(div);
+    }
+
+    function makeCell(tag, cls, text) {
+        var cell = document.createElement(tag);
+        cell.className = cls;
+        cell.textContent = text;
+        return cell;
     }
 
     function render(data) {
         if (!data || !Array.isArray(data.processes) || data.processes.length === 0) {
-            el.innerHTML = '<div class="bsm-proc-empty">' + emptyMsg + '</div>';
+            showMessage(emptyMsg);
             return;
         }
-        var html = '<table class="bsm-proc-table">'
-            + '<thead><tr>'
-            + '<th class="bsm-proc-pid">'  + hPid  + '</th>'
-            + '<th class="bsm-proc-name">' + hName + '</th>'
-            + '<th class="bsm-proc-num">'  + hCpu  + '</th>'
-            + '<th class="bsm-proc-num">'  + hMem  + '</th>'
-            + '<th class="bsm-proc-core">' + hCore + '</th>'
-            + '</tr></thead><tbody>';
+        var table = document.createElement('table');
+        table.className = 'bsm-proc-table';
+        var thead = document.createElement('thead');
+        var headrow = document.createElement('tr');
+        headrow.appendChild(makeCell('th', 'bsm-proc-pid', hPid));
+        headrow.appendChild(makeCell('th', 'bsm-proc-name', hName));
+        headrow.appendChild(makeCell('th', 'bsm-proc-num', hCpu));
+        headrow.appendChild(makeCell('th', 'bsm-proc-num', hMem));
+        headrow.appendChild(makeCell('th', 'bsm-proc-core', hCore));
+        thead.appendChild(headrow);
+        table.appendChild(thead);
+        var tbody = document.createElement('tbody');
         data.processes.forEach(function(p) {
             var core = (p.cpu_core !== null && p.cpu_core !== undefined)
-                ? esc(p.cpu_core) : '\u2014';
-            html += '<tr>'
-                + '<td class="bsm-proc-pid">'  + esc(p.pid)     + '</td>'
-                + '<td class="bsm-proc-name">' + esc(p.name)    + '</td>'
-                + '<td class="bsm-proc-num">'  + esc(p.cpu_pct) + '%</td>'
-                + '<td class="bsm-proc-num">'  + esc(p.mem_pct) + '%</td>'
-                + '<td class="bsm-proc-core">' + core           + '</td>'
-                + '</tr>';
+                ? String(p.cpu_core) : '\u2014';
+            var row = document.createElement('tr');
+            row.appendChild(makeCell('td', 'bsm-proc-pid', String(p.pid)));
+            row.appendChild(makeCell('td', 'bsm-proc-name', String(p.name)));
+            row.appendChild(makeCell('td', 'bsm-proc-num', p.cpu_pct + '%'));
+            row.appendChild(makeCell('td', 'bsm-proc-num', p.mem_pct + '%'));
+            row.appendChild(makeCell('td', 'bsm-proc-core', core));
+            tbody.appendChild(row);
         });
-        html += '</tbody></table>';
-        el.innerHTML = html;
+        table.appendChild(tbody);
+        clearEl();
+        el.appendChild(table);
     }
 
     function poll() {
@@ -677,7 +749,7 @@ class block_servermon extends block_base {
             .then(function(r) { return r.json(); })
             .then(render)
             .catch(function() {
-                el.innerHTML = '<div class="bsm-proc-empty">' + errorMsg + '</div>';
+                showMessage(errorMsg);
             });
     }
 
@@ -840,7 +912,6 @@ JSEOF;
         $sessdetail = get_string('debug_session_detail', 'block_servermon', (object)[
             'type' => htmlspecialchars($sess['type']),
             'size' => $sess['size'] ?? $unavail,
-            'wait' => $sess['wait'],
         ]);
 
         $sessalert = $sess['type'] === 'file' ? 'bsm-alert-warn' : 'bsm-alert-info';
@@ -974,7 +1045,7 @@ JSEOF;
             'dbreads'     => null,
             'dbwrites'    => null,
             'dbtime'      => null,
-            'session'     => ['type' => 'file', 'size' => null, 'wait' => '0.000 s'],
+            'session'     => ['type' => 'file', 'size' => null],
             'cachestats'  => [],
             'observation' => '',
         ];
@@ -1009,9 +1080,9 @@ JSEOF;
     }
 
     /**
-     * Determine the current Moodle session type, size, and wait string.
+     * Determine the current Moodle session type and size.
      *
-     * @return array Keys: type, size, wait, redis.
+     * @return array Keys: type, size, redis.
      */
     private function get_session_info(): array {
         global $CFG;
@@ -1034,7 +1105,7 @@ JSEOF;
             $size  = $bytes >= 1024 ? round($bytes / 1024, 1) . ' KB' : $bytes . ' B';
         }
 
-        $info = ['type' => $type, 'size' => $size, 'wait' => '0.000 s', 'redis' => null];
+        $info = ['type' => $type, 'size' => $size, 'redis' => null];
 
         if ($type === 'redis') {
             $info['redis'] = [
@@ -1179,17 +1250,15 @@ JSEOF;
         $total = $app['hits'] + $app['misses'];
 
         if ($total > 0) {
-            $missrate  = round(($app['misses'] / $total) * 100);
-            $storetype = $this->get_store_type_label($app['store']);
+            $missrate = round(($app['misses'] / $total) * 100);
+            $storekey = $this->get_store_type_key($app['store']);
 
-            if ($missrate >= 50 && strpos($storetype, 'file') !== false) {
-                return "Application cache miss rate ~{$missrate}%"
-                    . ' — adding Redis/APCu as the application store would cut file I/O.';
+            if ($missrate >= 50 && $storekey === 'file') {
+                return get_string('obs_cache_file', 'block_servermon', $missrate);
             }
 
-            if ($missrate >= 50 && strpos($storetype, 'redis') !== false) {
-                return "Application cache miss rate ~{$missrate}% on Redis"
-                    . ' — consider increasing Redis maxmemory or review eviction policy.';
+            if ($missrate >= 50 && $storekey === 'redis') {
+                return get_string('obs_cache_redis', 'block_servermon', $missrate);
             }
         }
 
@@ -1197,23 +1266,33 @@ JSEOF;
     }
 
     /**
+     * Derive a store type key from a raw store name.
+     *
+     * @param string $store Raw store name from cache stats.
+     * @return string One of: redis, memcached, apcu, file.
+     */
+    private function get_store_type_key(string $store): string {
+        $lower = strtolower($store);
+        if (strpos($lower, 'redis') !== false) {
+            return 'redis';
+        }
+        if (strpos($lower, 'memcach') !== false) {
+            return 'memcached';
+        }
+        if (strpos($lower, 'apcu') !== false || strpos($lower, 'apc') !== false) {
+            return 'apcu';
+        }
+        return 'file';
+    }
+
+    /**
      * Derive a human-readable store type label from a raw store name.
      *
      * @param string $store Raw store name from cache stats.
-     * @return string Human-readable label, e.g. "file store", "redis store".
+     * @return string Translated label, e.g. "file store", "redis store".
      */
     private function get_store_type_label(string $store): string {
-        $lower = strtolower($store);
-        if (strpos($lower, 'redis') !== false) {
-            return 'redis store';
-        }
-        if (strpos($lower, 'memcach') !== false) {
-            return 'memcached store';
-        }
-        if (strpos($lower, 'apcu') !== false || strpos($lower, 'apc') !== false) {
-            return 'APCu store';
-        }
-        return 'file store';
+        return get_string('store_' . $this->get_store_type_key($store), 'block_servermon');
     }
 
     /**

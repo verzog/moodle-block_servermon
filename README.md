@@ -6,8 +6,8 @@ A lightweight Moodle block that displays live server health metrics on the admin
 
 ## Requirements
 
-- Moodle 4.5 or higher
-- PHP 8.1 or higher
+- Moodle 5.0 or higher
+- PHP 8.2 or higher
 - Linux-based server recommended (Windows Server is supported but most metrics will show as unavailable)
 - Site administrator role to view the block
 
@@ -33,7 +33,7 @@ Three colour-coded progress bars are shown at the top of the block:
 
 | Metric | Source | Notes |
 |---|---|---|
-| **CPU Load** | `/proc/stat` (two-sample delta, 500 ms) | Aggregate CPU% plus per-core breakdown bars; 1m/5m/15m load averages shown below |
+| **CPU Load** | Latest scheduled-task snapshot (max 10 minutes old); falls back to a live `/proc/stat` two-sample delta (500 ms) when no fresh snapshot exists | Aggregate CPU% plus per-core breakdown bars; 1m/5m/15m load averages (always live) shown below |
 | **Memory (RAM)** | `/proc/meminfo` | Used/free/total in GB |
 | **Disk Space** | `disk_total_space()`, `disk_free_space()` | Used/free/total in GB for the configured mount point (default `/`) |
 
@@ -100,7 +100,7 @@ Collapsed by default. Click **Moodle debug footer — key metrics ▾** to expan
 
 #### Session handler
 
-Shows the active session backend type (file, Redis, Memcached, or database), the serialised size of the current session, and lock wait time. If Redis is detected, the full connection configuration is displayed:
+Shows the active session backend type (file, Redis, Memcached, or database) and the serialised size of the current session. If Redis is detected, the full connection configuration is displayed:
 
 - Host, port, database index
 - Key prefix
@@ -125,22 +125,20 @@ If the application cache miss rate exceeds 50% and the store is file-based, an a
 
 ### Metric Logging & CSV Export
 
-The block records server metrics once per minute to a lightweight database table (`block_servermon_log`). A **Download metrics CSV (last 7 days)** link appears at the bottom of the block when log records exist.
+The block records server metrics every 5 minutes to a lightweight database table (`block_servermon_log`). A **Download metrics CSV (last 7 days)** link appears at the bottom of the block when log records exist.
 
 #### What is logged
 
 | Column | Description |
 |---|---|
-| `timestamp` | UTC time of the sample |
+| `timestamp` | Time of the sample, rendered via `userdate()` in the exporting user's timezone |
 | `cpu_core0_pct` … `cpu_coreN_pct` | Per-core CPU% (one column per physical core) |
 | `ram_pct` | RAM used as a percentage of total |
 | `disk_pct` | Disk used as a percentage of total (for the configured disk path) |
 
-The CSV includes a UTF-8 BOM for clean opening in Microsoft Excel.
-
 #### Scheduled task
 
-A scheduled task (`collect_metrics`) runs every minute to write samples independently of page loads. It uses the same `/proc/stat` sampling logic as the live block display.
+A scheduled task (`collect_metrics`) runs every 5 minutes to write samples independently of page loads. It uses the same `/proc/stat` sampling logic as the block display, which in turn reads its CPU gauge from the most recent snapshot.
 
 ---
 
@@ -158,63 +156,27 @@ This setting also applies to the scheduled task so that logged disk metrics refl
 
 ### Hosting Type Detection
 
-The block attempts to classify the server environment using a **six-layer detection system**. This is a **best-effort heuristic only** — results should be treated as an informed guess rather than a confirmed fact.
+The block attempts to classify the server environment using a simple **resource-based scoring heuristic**. This is a **best-effort estimate only** — results should be treated as an informed guess rather than a confirmed fact, and the label is always marked as "(unconfirmed)".
 
-#### Detection layers (in priority order)
+#### Signals (one point each)
 
-**Layer 1 — Control panel / platform fingerprints**
-
-| Platform | Files/dirs checked | Label shown |
-|---|---|---|
-| YunoHost | `/etc/yunohost/`, `/usr/share/yunohost/` | YunoHost / Self-hosted VPS |
-| Plesk | `/etc/plesk/`, `/usr/local/psa/version` | VPS or Dedicated with Plesk |
-| cPanel | `/usr/local/cpanel/`, `/etc/cpanel/cpanel.config` | Shared or VPS with cPanel |
-| DirectAdmin | `/etc/directadmin/directadmin.conf` | Shared or VPS with DirectAdmin |
-| Webmin/Virtualmin | `/etc/webmin/`, `/usr/share/webmin/version` | Self-managed Server with Webmin |
-| ISPConfig | `/usr/local/ispconfig/` | Shared or VPS with ISPConfig |
-| HestiaCP / VestaCP | `/usr/local/hestia/`, `/usr/local/vesta/` | VPS with HestiaCP/VestaCP |
-| CentOS Web Panel | `/usr/local/cwpsrv/` | VPS with CWP |
-| Parallels/Virtuozzo | `/opt/psa/` | Shared or VPS with Parallels |
-
-**Layer 2 — Cloud provider detection**
-
-Reads `/sys/class/dmi/id/sys_vendor` to identify the cloud host directly.
-
-| Provider detected |
-|---|
-| AWS, Azure, Google Cloud, DigitalOcean, Hetzner, Contabo, Vultr, Linode/Akamai, OVH |
-
-**Layer 3 — Virtualisation type**
-
-Reads `/sys/class/dmi/id/product_name` and `/proc/cpuinfo` hypervisor flags.
-
-| Detected | Notes |
+| Signal | How it is checked |
 |---|---|
-| KVM | Used by Contabo, DigitalOcean, Vultr, Linode |
-| VMware | VMware ESXi environments |
-| VirtualBox | Local development machines |
-| QEMU/KVM | QEMU-based hypervisors |
-| Xen | AWS older instances, some dedicated providers |
-| Hyper-V | Microsoft Azure, Windows Server hosts |
-| Container (LXC/Docker) | Detected via `/proc/1/environ` |
+| Two or more CPU cores visible | `processor` entries in `/proc/cpuinfo` |
+| Roughly 1 GB+ of RAM visible | `MemTotal` in `/proc/meminfo` |
+| Network device stats readable | `/proc/net/dev` is readable |
+| Hostname file present | `/etc/hostname` exists |
+| PHP runs as a dedicated user | Process owner is not a generic web user (`nobody`, `www-data`, `apache`, `nginx`) |
 
-**Layer 4 — Bare-metal chassis detection**
-
-Reads `/sys/class/dmi/id/chassis_type`. Chassis codes 17 (Rack Mount), 23 (Blade), and 24 (Blade Enclosure) indicate physical dedicated hardware.
-
-**Layer 5 — OS fingerprint**
-
-Reads `/etc/os-release`, `/etc/debian_version`, or `/etc/redhat-release` for the Linux distribution name and version.
-
-**Layer 6 — Resource-based scoring (final fallback)**
-
-Only used if no label was set by layers 1–4. Scores based on CPU count, RAM, `/proc/net/dev` readability, and PHP process username.
+#### Labels by score
 
 | Score | Label |
 |---|---|
-| 3+ | Likely Dedicated Server |
-| 1–2 | Likely VPS or Shared Hosting |
-| 0 | Likely Shared Hosting |
+| 3+ | Likely VPS or dedicated (unconfirmed) |
+| 1–2 | Likely shared hosting or small VPS (unconfirmed) |
+| 0 | Likely shared hosting (unconfirmed) |
+
+The matched signals are listed beneath the label in the Server Info panel so you can see why the guess was made. On Windows the label is simply "Windows Server (unconfirmed)".
 
 ---
 
@@ -252,8 +214,8 @@ This block collects no personal data. The metric log table records only server-l
 
 | Component | Requirement |
 |---|---|
-| Moodle | 4.5+ |
-| PHP | 8.1+ |
+| Moodle | 5.0+ |
+| PHP | 8.2+ |
 | Database | MySQL, MariaDB, PostgreSQL |
 | OS | Linux (full support), Windows Server (gauges unavailable) |
 | Theme | Any Moodle theme |
@@ -281,11 +243,11 @@ Because it genuinely cannot be confirmed from within PHP alone. The label is a h
 No — the block is restricted to My Dashboard (`applicable_formats`) by design. This keeps sensitive server information away from course pages.
 
 **Will this slow down my Moodle site?**
-Minimally. The main block render reads from OS memory-mapped files and runs a 500 ms CPU sample. The process panel only polls when open. Metric logging is rate-limited to once per minute and runs via a scheduled task. No expensive queries are performed.
+Minimally. The CPU gauge is read from the most recent scheduled-task snapshot, so page render is not delayed; a live 500 ms CPU sample only runs as a fallback when no snapshot from the last 10 minutes exists. The process panel only polls while open. Metric logging runs every 5 minutes via a scheduled task. No expensive queries are performed.
 
 ---
 
 ## License
 
 GNU General Public License v3 or later
-http://www.gnu.org/copyleft/gpl.html
+https://www.gnu.org/copyleft/gpl.html

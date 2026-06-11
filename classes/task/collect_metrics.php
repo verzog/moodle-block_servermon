@@ -1,5 +1,5 @@
 <?php
-// This file is part of Moodle - http://moodle.org/
+// This file is part of Moodle - https://moodle.org/
 //
 // Moodle is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -12,14 +12,14 @@
 // GNU General Public License for more details.
 //
 // You should have received a copy of the GNU General Public License
-// along with Moodle.  If not, see <http://www.gnu.org/licenses/>.
+// along with Moodle.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
  * Scheduled task to collect and log server metrics for block_servermon.
  *
  * @package   block_servermon
  * @copyright 2026 Vernon Spain
- * @license   http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
+ * @license   https://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
 
 namespace block_servermon\task;
@@ -31,7 +31,7 @@ namespace block_servermon\task;
  *
  * @package   block_servermon
  * @copyright 2026 Vernon Spain
- * @license   http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
+ * @license   https://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
 class collect_metrics extends \core\task\scheduled_task {
     /**
@@ -136,7 +136,7 @@ class collect_metrics extends \core\task\scheduled_task {
             return null;
         }
         $configured = get_config('block_servermon', 'disk_path');
-        $default    = $islinux ? '/' : 'C:\\\\';
+        $default    = $islinux ? '/' : 'C:\\';
         $path       = (!empty($configured) && is_readable($configured)) ? $configured : $default;
         $total = @disk_total_space($path);
         $free  = @disk_free_space($path);
@@ -179,10 +179,12 @@ class collect_metrics extends \core\task\scheduled_task {
      * @return float|null Usage percentage 0-100, or null if calculation fails.
      */
     private function calc_cpu_pct(array $s1, array $s2): ?float {
+        // Guest/guest_nice (fields 8-9) are already counted in user/nice,
+        // so only the first eight fields are summed to avoid double counting.
         $idle1  = ($s1[3] ?? 0) + ($s1[4] ?? 0);
         $idle2  = ($s2[3] ?? 0) + ($s2[4] ?? 0);
-        $total1 = array_sum($s1);
-        $total2 = array_sum($s2);
+        $total1 = array_sum(array_slice($s1, 0, 8));
+        $total2 = array_sum(array_slice($s2, 0, 8));
 
         $dtotal = $total2 - $total1;
         $didle  = $idle2 - $idle1;
