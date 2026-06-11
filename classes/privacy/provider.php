@@ -25,8 +25,6 @@
  */
 namespace block_servermon\privacy;
 
-defined('MOODLE_INTERNAL') || die();
-
 use core_privacy\local\metadata\null_provider;
 
 /**

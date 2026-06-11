@@ -24,8 +24,6 @@
 
 namespace block_servermon\task;
 
-defined('MOODLE_INTERNAL') || die();
-
 /**
  * Collects per-core CPU, RAM, and disk snapshots every 5 minutes.
  *
