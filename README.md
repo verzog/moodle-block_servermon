@@ -97,13 +97,13 @@ A banner at the top shows which OS user **this Moodle request** is running as, a
 
 #### Operating-system users
 
-Lists login-capable accounts read from `/etc/passwd` — regular users with a UID of 1000 or higher and a real login shell. System/service accounts (no login shell) are counted but not listed individually.
+Lists accounts read from `/etc/passwd` with a UID of 1000 or higher — **including shell-less service accounts**, because isolation platforms (YunoHost, Plesk, cPanel, ISPConfig, …) deliberately run each app as its own `nologin` user. Lower-UID system accounts are counted but not listed individually. The account serving the current request is tagged **this request**, and accounts that own an FPM pool are tagged **FPM pool**.
 
 | Column | Description |
 |---|---|
-| **User** | Account name |
+| **User** | Account name (plus tags) |
 | **UID** | Numeric user ID |
-| **Shell** | Login shell |
+| **Shell** | Login shell (often `nologin` for per-app users) |
 
 If `/etc/passwd` is not readable (some locked-down hosts), the list shows as unavailable.
 
@@ -136,13 +136,13 @@ A best-effort verdict (always marked *unconfirmed*, like the Hosting Type heuris
 | Verdict | Meaning |
 |---|---|
 | **Good** | Two or more pools, each a dedicated user **and** fenced (`open_basedir`/`chroot`, private socket); no cross-tenant `/proc` leak |
-| **Partial** | Pools run as dedicated users but some hardening is missing — no `open_basedir`/`chroot`, a shared home, or cross-tenant `/proc` visibility |
-| **Weak** | A serious problem: this request (or a pool) runs as a generic/shared user or `root`, a world-open socket, or a missing account |
+| **Partial** | Either: pools run as dedicated users but some hardening is missing (no `open_basedir`/`chroot`, a shared home, cross-tenant `/proc` visibility); **or** this request runs on its own dedicated pool while the server also has generic/shared pools that don't serve it |
+| **Weak** | A serious problem affecting this site: the request itself (or its own pool) runs as a generic/shared user or `root`, has a world-open socket, or a missing account |
 | **Single** | A single pool running as a dedicated user — fine for one tenant, not multi-site isolation |
 | **Incomplete** | Some pool files were unreadable, or a pool's `user`/`group` lives in an `include` fragment that wasn't followed — isolation can't be fully confirmed |
 | **Unknown** | No pool configuration could be read |
 
-`$pool` variables in directives (e.g. `user = $pool`) are resolved to the pool name, and php.ini-style inline comments are stripped, before assessing.
+The headline answers *"is **this** Moodle isolated?"* When the request runs on a confirmed dedicated user, serious problems confined to **other** pools downgrade the headline to **Partial** (not Weak) — those pools are still flagged individually so the server-wide warning isn't lost. If pool files were unreadable, the verdict line says so, since isolated app pools may simply not have been visible. `$pool` variables in directives (e.g. `user = $pool`) are resolved to the pool name, and php.ini-style inline comments are stripped, before assessing.
 
 > This is a configuration audit, not a live security guarantee. It reads the FPM config files as written and the kernel's process table; it does not verify the running FPM master. Treat it as a checklist aid.
 

@@ -372,6 +372,16 @@
     border-radius: 0.25rem;
 }
 
+.bsm-iso-tag {
+    font-size: 0.6rem;
+    font-weight: 600;
+    background: rgba(128, 128, 128, 0.22);
+    padding: 0.05rem 0.3rem;
+    border-radius: 0.25rem;
+    margin-left: 0.25rem;
+    white-space: nowrap;
+}
+
 /* --- Per-core CPU breakdown --- */
 
 .bsm-percore {

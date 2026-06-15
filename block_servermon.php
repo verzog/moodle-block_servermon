@@ -566,11 +566,12 @@ class block_servermon extends block_base {
     }
 
     /**
-     * Read login-capable operating-system users from /etc/passwd.
+     * Read per-site operating-system accounts from /etc/passwd.
      *
-     * Regular accounts (UID 1000–65533 with a real login shell) are returned
-     * individually; service/system accounts are only counted. On a properly
-     * isolated shared server each hosted site has its own regular user.
+     * Accounts with UID 1000–65533 are returned individually — including
+     * shell-less service accounts, because isolation setups (YunoHost, Plesk,
+     * cPanel, …) deliberately run each app as its own nologin user. Lower-UID
+     * system accounts are only counted.
      *
      * @param bool $islinux Whether the server is running Linux.
      * @return array Keys: readable (bool), users (array), systemcount (int), byname (array).
@@ -588,7 +589,6 @@ class block_servermon extends block_base {
         }
         $result['readable'] = true;
 
-        $noshells = ['/usr/sbin/nologin', '/sbin/nologin', '/bin/false', '/usr/bin/false', '/dev/null', ''];
         foreach ($lines as $line) {
             if ($line === '' || $line[0] === '#') {
                 continue;
@@ -600,13 +600,12 @@ class block_servermon extends block_base {
             $uid   = (int) $parts[2];
             $home  = $parts[5];
             $shell = trim($parts[6]);
-            $islogin = !in_array($shell, $noshells, true);
 
             // Keep every account in a name lookup so pool users can be cross-referenced.
             $result['byname'][$parts[0]] = ['uid' => $uid, 'home' => $home];
 
-            // Regular login accounts: UID 1000-65533 with a real shell. 65534 is "nobody".
-            if ($uid >= 1000 && $uid < 65534 && $islogin) {
+            // Per-site accounts: UID 1000-65533, regardless of login shell. 65534 is "nobody".
+            if ($uid >= 1000 && $uid < 65534) {
                 $result['users'][] = [
                     'name'  => $parts[0],
                     'uid'   => $uid,
@@ -1037,10 +1036,27 @@ class block_servermon extends block_base {
     }
 
     /**
+     * Build a verdict array, appending an optional trailing caveat sentence.
+     *
+     * @param string $level Verdict level.
+     * @param string $key Language string key for the label.
+     * @param mixed $a Optional placeholder data for the language string.
+     * @param string $caveat Optional already-built caveat to append.
+     * @return array Keys: level, label.
+     */
+    private function verdict(string $level, string $key, $a = null, string $caveat = ''): array {
+        return ['level' => $level, 'label' => get_string($key, 'block_servermon', $a) . $caveat];
+    }
+
+    /**
      * Assess whether the server appears to isolate sites from one another.
      *
      * Combines the user this request runs as, per-pool issues, unreadable
      * config, and /proc process visibility. Best-effort — always unconfirmed.
+     *
+     * When this request runs on a confirmed dedicated user, serious problems
+     * confined to other pools downgrade the headline to Partial rather than
+     * Weak: this site is isolated even though the server has shared pools.
      *
      * @param array $poolinfo Pool info from get_fpm_pools() with evaluated pools.
      * @param array $procvis Result from get_proc_visibility().
@@ -1048,47 +1064,65 @@ class block_servermon extends block_base {
      */
     private function assess_isolation(array $poolinfo, array $procvis): array {
         $pools      = $poolinfo['pools'];
-        $incomplete = !empty($poolinfo['unreadable']);
+        $unreadable = (int) ($poolinfo['unreadable'] ?? 0);
         $current    = (string) ($poolinfo['currentuser'] ?? '');
+        $caveat     = $unreadable > 0 ? ' ' . get_string('iso_caveat_unreadable', 'block_servermon', $unreadable) : '';
+
+        $currentbad       = $current !== '' && ($this->is_generic_user($current) || strtolower($current) === 'root');
+        $currentdedicated = $current !== '' && !$currentbad;
 
         // The account THIS request runs as is the most direct signal.
-        if ($current !== '' && ($this->is_generic_user($current) || strtolower($current) === 'root')) {
-            return ['level' => 'weak', 'label' => get_string('iso_verdict_current', 'block_servermon', $current)];
+        if ($currentbad) {
+            return $this->verdict('weak', 'iso_verdict_current', $current);
         }
 
         if (empty($pools)) {
             if ($this->procvis_leaks($procvis)) {
-                return ['level' => 'partial', 'label' => get_string('iso_verdict_proconly', 'block_servermon', $procvis['count'])];
+                return $this->verdict('partial', 'iso_verdict_proconly', $procvis['count']);
             }
-            $key = $incomplete ? 'iso_verdict_incomplete' : 'iso_verdict_unknown';
-            return ['level' => $incomplete ? 'incomplete' : 'unknown', 'label' => get_string($key, 'block_servermon')];
+            if ($unreadable > 0) {
+                return $this->verdict('incomplete', 'iso_verdict_incomplete');
+            }
+            return $this->verdict('unknown', 'iso_verdict_unknown');
         }
 
         $hard = false;
         $soft = false;
         $undetermined = false;
+        $hardhitscurrent = false;
         foreach ($pools as $pool) {
+            $iscurrentpool = $current !== '' && $pool['user'] === $current;
             foreach ($pool['issues'] as $code) {
                 $sev = $this->issue_severity($code);
-                $hard = $hard || ($sev === 'hard');
-                $soft = $soft || ($sev === 'soft');
-                $undetermined = $undetermined || ($sev === 'undetermined');
+                if ($sev === 'hard') {
+                    $hard = true;
+                    $hardhitscurrent = $hardhitscurrent || $iscurrentpool;
+                } else if ($sev === 'soft') {
+                    $soft = true;
+                } else {
+                    $undetermined = true;
+                }
             }
         }
 
         if ($hard) {
-            return ['level' => 'weak', 'label' => get_string('iso_verdict_weak', 'block_servermon')];
+            // Option A: a dedicated current user whose own pool is clean stays
+            // isolated even when other pools are misconfigured.
+            if ($currentdedicated && !$hardhitscurrent) {
+                return $this->verdict('partial', 'iso_verdict_otherweak', null, $caveat);
+            }
+            return $this->verdict('weak', 'iso_verdict_weak', null, $caveat);
         }
-        if ($undetermined || $incomplete) {
-            return ['level' => 'incomplete', 'label' => get_string('iso_verdict_incomplete', 'block_servermon')];
+        if ($undetermined || $unreadable > 0) {
+            return $this->verdict('incomplete', 'iso_verdict_incomplete');
         }
         if ($soft || $this->procvis_leaks($procvis)) {
-            return ['level' => 'partial', 'label' => get_string('iso_verdict_partial', 'block_servermon')];
+            return $this->verdict('partial', 'iso_verdict_partial');
         }
         if (count($pools) >= 2) {
-            return ['level' => 'good', 'label' => get_string('iso_verdict_good', 'block_servermon')];
+            return $this->verdict('good', 'iso_verdict_good');
         }
-        return ['level' => 'single', 'label' => get_string('iso_verdict_single', 'block_servermon')];
+        return $this->verdict('single', 'iso_verdict_single');
     }
 
     // Rendering.
@@ -1426,8 +1460,16 @@ JSEOF;
     private function render_isolation_section(array $iso): string {
         $label = get_string('iso_toggle', 'block_servermon');
 
+        $poolusers = [];
+        foreach ($iso['pools']['pools'] as $pool) {
+            if ($pool['user'] !== '' && strpos($pool['user'], '$') === false) {
+                $poolusers[$pool['user']] = true;
+            }
+        }
+        $context = ['current' => $iso['pools']['currentuser'], 'poolusers' => $poolusers];
+
         $body  = $this->render_isolation_current($iso['pools']);
-        $body .= $this->render_isolation_users($iso['users']);
+        $body .= $this->render_isolation_users($iso['users'], $context);
         $body .= $this->render_isolation_pools($iso['pools']);
         $body .= $this->render_isolation_procvis($iso['procvis']);
         $body .= $this->render_isolation_verdict($iso['verdict']);
@@ -1464,9 +1506,10 @@ JSEOF;
      * Render the operating-system users sub-section.
      *
      * @param array $u OS user info from get_os_users().
+     * @param array $context Keys: current (string|null), poolusers (name => true).
      * @return string HTML output.
      */
-    private function render_isolation_users(array $u): string {
+    private function render_isolation_users(array $u, array $context): string {
         $html = '<h6 class="bsm-debug-section-title">' . get_string('iso_users_title', 'block_servermon') . '</h6>';
 
         if (!$u['readable']) {
@@ -1485,8 +1528,9 @@ JSEOF;
                 . '<td class="bsm-info-key">' . get_string('iso_user_shell', 'block_servermon') . '</td>'
                 . '</tr>';
             foreach ($u['users'] as $row) {
+                $namecell = htmlspecialchars($row['name']) . $this->user_tags($row['name'], $context);
                 $html .= '<tr>'
-                    . '<td class="bsm-info-val">' . htmlspecialchars($row['name']) . '</td>'
+                    . '<td class="bsm-info-val">' . $namecell . '</td>'
                     . '<td class="bsm-info-val">' . (int) $row['uid'] . '</td>'
                     . '<td class="bsm-info-val">' . htmlspecialchars($row['shell']) . '</td>'
                     . '</tr>';
@@ -1501,6 +1545,24 @@ JSEOF;
         }
 
         return $html;
+    }
+
+    /**
+     * Build the small tags shown next to a user (current request / FPM pool owner).
+     *
+     * @param string $name Username.
+     * @param array $context Keys: current (string|null), poolusers (name => true).
+     * @return string HTML output (may be empty).
+     */
+    private function user_tags(string $name, array $context): string {
+        $tags = '';
+        if ($name === $context['current']) {
+            $tags .= ' <span class="bsm-iso-tag">' . get_string('iso_tag_current', 'block_servermon') . '</span>';
+        }
+        if (!empty($context['poolusers'][$name])) {
+            $tags .= ' <span class="bsm-iso-tag">' . get_string('iso_tag_pool', 'block_servermon') . '</span>';
+        }
+        return $tags;
     }
 
     /**
@@ -1613,7 +1675,11 @@ JSEOF;
                 . get_string('iso_proc_ok', 'block_servermon') . '</div>';
         }
 
-        $names = implode(', ', array_map('htmlspecialchars', array_slice($pv['foreign'], 0, 8)));
+        $shown = array_slice($pv['foreign'], 0, 8);
+        $names = implode(', ', array_map('htmlspecialchars', $shown));
+        if (count($pv['foreign']) > count($shown)) {
+            $names .= ', …';
+        }
         return $html . '<div class="bsm-debug-alert bsm-alert-warn">'
             . get_string('iso_proc_leak', 'block_servermon', (object) [
                 'count' => $pv['count'],
@@ -1629,7 +1695,7 @@ JSEOF;
      * @return string HTML output.
      */
     private function render_isolation_verdict(array $verdict): string {
-        $alert = in_array($verdict['level'], ['weak', 'incomplete'], true) ? 'bsm-alert-warn' : 'bsm-alert-info';
+        $alert = in_array($verdict['level'], ['weak', 'incomplete', 'partial'], true) ? 'bsm-alert-warn' : 'bsm-alert-info';
 
         return '<h6 class="bsm-debug-section-title">' . get_string('iso_verdict_title', 'block_servermon') . '</h6>'
             . '<div class="bsm-debug-alert ' . $alert . '">' . htmlspecialchars($verdict['label']) . '</div>';
