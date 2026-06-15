@@ -560,7 +560,7 @@
 
     .bsm-print-wrap,
     .bsm-csv-link {
-        display: none !important;
+        display: none;
     }
 
     .bsm-print-header {
