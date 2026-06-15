@@ -97,7 +97,7 @@ A banner at the top shows which OS user **this Moodle request** is running as, a
 
 #### Operating-system users
 
-Lists accounts read from `/etc/passwd` with a UID of 1000 or higher — **including shell-less service accounts**, because isolation platforms (YunoHost, Plesk, cPanel, ISPConfig, …) deliberately run each app as its own `nologin` user. Lower-UID system accounts are counted but not listed individually. The account serving the current request is tagged **this request**, and accounts that own an FPM pool are tagged **FPM pool**.
+Lists regular accounts read from `/etc/passwd` (UID ≥ 1000) **plus** the account serving the current request and any FPM-pool owners — regardless of UID. This matters because some isolation platforms create per-app users in the **system UID range** (notably YunoHost, where an app may run as a `nologin` user with a UID below 1000); a plain "UID ≥ 1000" filter would hide exactly the users that prove isolation. The current-request account is tagged **this request**, and FPM-pool owners are tagged **FPM pool**. Remaining low-UID system accounts are counted (and on some platforms other per-site users live there too and aren't all listed individually).
 
 | Column | Description |
 |---|---|

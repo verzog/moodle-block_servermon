@@ -534,6 +534,7 @@ class block_servermon extends block_base {
         $procvis  = $this->get_proc_visibility($islinux);
 
         $poolinfo['pools'] = $this->evaluate_pools($poolinfo['pools'], $users);
+        $users             = $this->add_known_site_users($users, $poolinfo);
 
         return [
             'users'   => $users,
@@ -541,6 +542,60 @@ class block_servermon extends block_base {
             'procvis' => $procvis,
             'verdict' => $this->assess_isolation($poolinfo, $procvis),
         ];
+    }
+
+    /**
+     * Add the accounts known to serve sites (the current request's user and any
+     * FPM-pool owners) to the user list, regardless of UID.
+     *
+     * Some platforms (notably YunoHost) create per-app users in the system UID
+     * range (< 1000), so a plain UID >= 1000 filter misses them even though they
+     * are the isolation mechanism. This pulls them back in via the passwd map.
+     *
+     * @param array $users OS user info from get_os_users().
+     * @param array $poolinfo Pool info from get_fpm_pools().
+     * @return array Updated OS user info.
+     */
+    private function add_known_site_users(array $users, array $poolinfo): array {
+        if (!$users['readable']) {
+            return $users;
+        }
+
+        $known = [];
+        if (!empty($poolinfo['currentuser'])) {
+            $known[$poolinfo['currentuser']] = true;
+        }
+        foreach ($poolinfo['pools'] as $pool) {
+            if ($pool['user'] !== '' && strpos($pool['user'], '$') === false) {
+                $known[$pool['user']] = true;
+            }
+        }
+
+        $listed = [];
+        foreach ($users['users'] as $u) {
+            $listed[$u['name']] = true;
+        }
+
+        foreach (array_keys($known) as $name) {
+            // Already shown, generic web account, or unknown to passwd — skip.
+            if (isset($listed[$name]) || $this->is_generic_user($name) || empty($users['byname'][$name])) {
+                continue;
+            }
+            $info = $users['byname'][$name];
+            $users['users'][] = [
+                'name'  => $name,
+                'uid'   => $info['uid'],
+                'home'  => $info['home'],
+                'shell' => $info['shell'] ?? '',
+            ];
+            // It was previously tallied as a low-level system account.
+            if ($info['uid'] < 1000 || $info['uid'] >= 65534) {
+                $users['systemcount'] = max(0, $users['systemcount'] - 1);
+            }
+        }
+
+        usort($users['users'], static fn($a, $b) => $a['uid'] <=> $b['uid']);
+        return $users;
     }
 
     /**
@@ -602,7 +657,7 @@ class block_servermon extends block_base {
             $shell = trim($parts[6]);
 
             // Keep every account in a name lookup so pool users can be cross-referenced.
-            $result['byname'][$parts[0]] = ['uid' => $uid, 'home' => $home];
+            $result['byname'][$parts[0]] = ['uid' => $uid, 'home' => $home, 'shell' => $shell];
 
             // Per-site accounts: UID 1000-65533, regardless of login shell. 65534 is "nobody".
             if ($uid >= 1000 && $uid < 65534) {
