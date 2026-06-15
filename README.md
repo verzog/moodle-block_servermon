@@ -205,6 +205,14 @@ A scheduled task (`collect_metrics`) runs every 5 minutes to write samples indep
 
 ---
 
+### Print / Save as PDF
+
+A **Print / Save as PDF** button at the bottom of the block opens your browser's print dialog (where you can choose "Save as PDF"). A print stylesheet hides the rest of the Moodle page so only the block prints, preserves the colour-coded bars and badges, and adds a header line with the plugin name, hostname and timestamp.
+
+The collapsible **Server Info**, **isolation** and **debug footer** sections are expanded automatically for the printout and restored afterwards. The live **Top processes** panel is left as you have it — expand it before printing if you want that snapshot included. This is a client-side print (no server-side PDF library), so the output matches exactly what the browser renders.
+
+---
+
 ## Admin Settings
 
 Go to **Site Administration → Plugins → Blocks → Server Monitor** to configure:
