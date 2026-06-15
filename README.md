@@ -1,6 +1,6 @@
 # Server Monitor Block for Moodle (`block_servermon`)
 
-A lightweight Moodle block that displays live server health metrics on the admin Dashboard. Covers CPU, RAM, disk, top processes, Moodle page-performance metrics, cache store health, session info, and historical metric logging with CSV export.
+A lightweight Moodle block that displays live server health metrics on the admin Dashboard. Covers CPU, RAM, disk, top processes, Moodle page-performance metrics, cache store health, session info, a shared-server isolation audit (OS users, PHP-FPM pools, `/proc` `hidepid`), and historical metric logging with CSV export. The whole block can be printed or saved as a PDF.
 
 ---
 
@@ -278,6 +278,8 @@ Some shared hosting providers restrict access to `/proc/meminfo`, `/proc/cpuinfo
 ## Privacy
 
 This block collects no personal data. The metric log table records only server-level OS metrics (CPU%, RAM%, disk%) with a timestamp. No usernames, IP addresses, or session identifiers are stored. The Moodle privacy API null provider is implemented accordingly.
+
+The shared-server isolation panel reads OS-level configuration (`/etc/passwd`, PHP-FPM pool files, `/proc`) and displays operating-system account names to the viewing site administrator, but it stores none of this — the information is read live on each page load and never written to the database.
 
 ---
 
