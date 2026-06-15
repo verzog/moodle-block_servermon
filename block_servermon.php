@@ -1911,13 +1911,20 @@ JSEOF;
             'size' => $sess['size'] ?? $unavail,
         ]);
 
-        $sessalert = $sess['type'] === 'file' ? 'bsm-alert-warn' : 'bsm-alert-info';
+        // A file handler with Redis settings present is a misconfiguration, not just
+        // a missing optimisation — flag it as a warning rather than a passive notice.
+        $misconfigured = $sess['type'] === 'file' && !empty($sess['redisconfigured']);
+        $sessalert = ($sess['type'] === 'file') ? 'bsm-alert-warn' : 'bsm-alert-info';
         $html  = '<h6 class="bsm-debug-section-title">' . get_string('debug_session', 'block_servermon') . '</h6>';
         $html .= '<div class="bsm-debug-alert ' . $sessalert . '">' . $sessdetail;
 
-        if ($sess['type'] === 'file') {
-            $html .= '<br>' . get_string('debug_session_warn', 'block_servermon');
-        } else if ($sess['type'] === 'redis' && $sess['redis'] !== null) {
+        // Always show the configured handler class so the active backend is verifiable.
+        $handler = $sess['handlerclass'] !== ''
+            ? $sess['handlerclass']
+            : get_string('debug_session_handler_unset', 'block_servermon');
+        $html .= '<br>' . get_string('debug_session_handler', 'block_servermon', htmlspecialchars($handler));
+
+        if ($sess['type'] === 'redis' && $sess['redis'] !== null) {
             $r     = $sess['redis'];
             $html .= '<br>' . get_string('debug_session_redis', 'block_servermon', (object)[
                 'host'         => htmlspecialchars($r['host']),
@@ -1927,7 +1934,22 @@ JSEOF;
                 'lock_timeout' => $r['lock_timeout'],
                 'lock_expire'  => $r['lock_expire'],
             ]);
+        } else if ($misconfigured) {
+            // Redis connection details exist but the handler is still file-based.
+            $r     = $sess['redis'];
+            $html .= '<br>' . get_string('debug_session_redis_inactive', 'block_servermon', (object)[
+                'host' => htmlspecialchars($r['host']),
+                'port' => $r['port'],
+            ]);
+        } else if ($sess['type'] === 'file') {
+            $html .= '<br>' . get_string('debug_session_warn', 'block_servermon');
         }
+
+        // Surface a missing PHP extension whenever Redis is intended (active or configured).
+        if (($sess['type'] === 'redis' || !empty($sess['redisconfigured'])) && empty($sess['redisext'])) {
+            $html .= '<br>' . get_string('debug_session_redis_noext', 'block_servermon');
+        }
+
         $html .= '</div>';
         return $html;
     }
@@ -2084,9 +2106,11 @@ JSEOF;
     private function get_session_info(): array {
         global $CFG;
 
+        $handlerclass = isset($CFG->session_handler_class) ? (string)$CFG->session_handler_class : '';
+
         $type = 'file';
-        if (isset($CFG->session_handler_class)) {
-            $cls = strtolower($CFG->session_handler_class);
+        if ($handlerclass !== '') {
+            $cls = strtolower($handlerclass);
             if (strpos($cls, 'redis') !== false) {
                 $type = 'redis';
             } else if (strpos($cls, 'memcached') !== false) {
@@ -2102,9 +2126,22 @@ JSEOF;
             $size  = $bytes >= 1024 ? round($bytes / 1024, 1) . ' KB' : $bytes . ' B';
         }
 
-        $info = ['type' => $type, 'size' => $size, 'redis' => null];
+        // Redis session connection settings may be present in config.php even when the
+        // session handler is not actually pointed at Redis. Detecting this independently
+        // surfaces the common "Redis was configured but sessions are still file-based"
+        // misconfiguration instead of silently reporting "file".
+        $redisconfigured = !empty($CFG->session_redis_host);
 
-        if ($type === 'redis') {
+        $info = [
+            'type'            => $type,
+            'size'            => $size,
+            'redis'           => null,
+            'handlerclass'    => $handlerclass,
+            'redisconfigured' => $redisconfigured,
+            'redisext'        => extension_loaded('redis'),
+        ];
+
+        if ($type === 'redis' || $redisconfigured) {
             $info['redis'] = [
                 'host' => $CFG->session_redis_host ?? '127.0.0.1',
                 'port' => $CFG->session_redis_port ?? 6379,

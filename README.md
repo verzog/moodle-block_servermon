@@ -163,13 +163,19 @@ Collapsed by default. Click **Moodle debug footer — key metrics ▾** to expan
 
 #### Session handler
 
-Shows the active session backend type (file, Redis, Memcached, or database) and the serialised size of the current session. If Redis is detected, the full connection configuration is displayed:
+Shows the active session backend type (file, Redis, Memcached, or database), the configured `session_handler_class`, and the serialised size of the current session. If Redis is detected, the full connection configuration is displayed:
 
 - Host, port, database index
 - Key prefix
 - Lock timeout and lock expiry settings
 
-A warning is shown if the file-based session handler is in use, as this can become a bottleneck under load.
+The handler is detected from `$CFG->session_handler_class`, which is the *only* setting Moodle uses to choose the session backend. Configuring Redis as a MUC cache store does **not** move sessions onto Redis.
+
+The panel also flags common misconfigurations:
+
+- **Redis configured but inactive** — if `session_redis_*` connection settings exist in `config.php` but `session_handler_class` is not pointed at Redis, sessions are still file-based. The panel reports the detected host/port and the exact line needed to activate Redis sessions (`$CFG->session_handler_class = '\core\session\redis';`).
+- **Missing extension** — if Redis is intended (active or configured) but the PHP `redis` extension is not loaded, a warning is shown.
+- **File sessions** — a warning is shown if the file-based handler is in use with no Redis settings present, as this can become a bottleneck under load.
 
 #### Cache store performance
 
