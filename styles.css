@@ -296,6 +296,39 @@
     font-variant-numeric: tabular-nums;
 }
 
+/* --- OS users & PHP-FPM pools --- */
+
+.bsm-iso-body {
+    padding-top: 0.6rem;
+}
+
+.bsm-iso-intro {
+    font-size: 0.72rem;
+    opacity: 0.6;
+    margin-bottom: 0.3rem;
+}
+
+.bsm-iso-note {
+    font-size: 0.72rem;
+    opacity: 0.55;
+    font-style: italic;
+    margin: 0.3rem 0;
+}
+
+.bsm-iso-table {
+    margin-top: 0.3rem;
+    margin-bottom: 0.4rem;
+}
+
+.bsm-iso-table tr:first-child .bsm-info-key {
+    font-weight: 600;
+}
+
+.bsm-iso-table .bsm-info-val {
+    font-family: monospace;
+    font-size: 0.74rem;
+}
+
 /* --- Per-core CPU breakdown --- */
 
 .bsm-percore {

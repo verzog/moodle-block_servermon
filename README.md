@@ -85,6 +85,52 @@ Collapsed by default. Click **Server Info ▾** to expand. Contains:
 
 ---
 
+### OS Users & PHP-FPM Pools — Shared-Server Isolation
+
+Collapsed by default. Click **OS users & PHP-FPM pools — shared-server isolation ▾** to expand.
+
+This section helps you confirm that a multi-tenant (shared) server isolates each hosted site correctly: ideally every site runs under its own operating-system user **and** its own PHP-FPM pool listening on its own socket, so one site cannot read another's files or starve it of workers.
+
+#### Operating-system users
+
+Lists login-capable accounts read from `/etc/passwd` — regular users with a UID of 1000 or higher and a real login shell. System/service accounts (no login shell) are counted but not listed individually.
+
+| Column | Description |
+|---|---|
+| **User** | Account name |
+| **UID** | Numeric user ID |
+| **Shell** | Login shell |
+
+If `/etc/passwd` is not readable (some locked-down hosts), the list shows as unavailable.
+
+#### PHP-FPM pools
+
+Scans the standard pool configuration directories (`/etc/php/*/fpm/pool.d/`, `/etc/php-fpm.d/`, `/usr/local/etc/php-fpm.d/`) and lists each pool with the OS user/group it runs as and its listen socket. The user the current request is running under (and the PHP SAPI) is shown above the table.
+
+| Column | Description |
+|---|---|
+| **Pool** | Pool name from the `[pool]` section header |
+| **User (:group)** | The `user` (and `group`, if different) the pool runs as |
+| **Listen** | The `listen` socket or address |
+
+If no pool files are found, the server likely uses mod_php or a single pool. If pool files exist but are not readable, that is reported too.
+
+#### Isolation assessment
+
+A best-effort verdict (always marked *unconfirmed*, like the Hosting Type heuristic):
+
+| Verdict | Meaning |
+|---|---|
+| **Good** | Two or more pools, each running as its own dedicated, non-generic user |
+| **Partial** | Multiple pools exist but some share an OS user |
+| **Weak** | One or more pools run as a generic web-server user (`www-data`, `nginx`, `apache`, `nobody`, …) — no isolation |
+| **Single** | A single pool running as a dedicated user — fine for one tenant, not multi-site isolation |
+| **Unknown** | No pool configuration could be read |
+
+> This is a configuration audit, not a live security guarantee. It reads the FPM config files as written; it does not verify the running master process. Treat it as a checklist aid.
+
+---
+
 ### Moodle Debug Footer — Key Metrics
 
 Collapsed by default. Click **Moodle debug footer — key metrics ▾** to expand. Shows Moodle page-performance data for the current request:

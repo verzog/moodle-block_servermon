@@ -33,6 +33,15 @@ with the process responsible.</p>
   <li>Advisory note if the application cache miss rate is high</li>
 </ul>
 
+<h4>OS users &amp; PHP-FPM pools — shared-server isolation</h4>
+<p>A collapsible panel for auditing whether a multi-tenant server isolates sites correctly. It lists
+login-capable operating-system users from <code>/etc/passwd</code> (UID&nbsp;&ge;&nbsp;1000) and parses
+PHP-FPM pool configuration from the standard locations
+(<code>/etc/php/*/fpm/pool.d/</code>, <code>/etc/php-fpm.d/</code>,
+<code>/usr/local/etc/php-fpm.d/</code>), showing each pool's user/group and listen socket. A
+best-effort, always-unconfirmed verdict flags whether each pool runs as its own dedicated user
+(proper isolation) or shares a generic web-server user such as <code>www-data</code>.</p>
+
 <h4>Metric logging and CSV export</h4>
 <p>A scheduled task records CPU (per-core %), RAM%, and disk% every 5 minutes to a lightweight
 database table. A <em>Download metrics CSV (last 7 days)</em> link appears at the bottom of the
