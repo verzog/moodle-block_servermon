@@ -34,13 +34,17 @@ with the process responsible.</p>
 </ul>
 
 <h4>OS users &amp; PHP-FPM pools — shared-server isolation</h4>
-<p>A collapsible panel for auditing whether a multi-tenant server isolates sites correctly. It lists
-login-capable operating-system users from <code>/etc/passwd</code> (UID&nbsp;&ge;&nbsp;1000) and parses
-PHP-FPM pool configuration from the standard locations
-(<code>/etc/php/*/fpm/pool.d/</code>, <code>/etc/php-fpm.d/</code>,
-<code>/usr/local/etc/php-fpm.d/</code>), showing each pool's user/group and listen socket. A
-best-effort, always-unconfirmed verdict flags whether each pool runs as its own dedicated user
-(proper isolation) or shares a generic web-server user such as <code>www-data</code>.</p>
+<p>A collapsible panel for auditing whether a multi-tenant server isolates sites correctly. It shows
+which OS user the current request runs as, lists login-capable operating-system users from
+<code>/etc/passwd</code> (UID&nbsp;&ge;&nbsp;1000), and parses PHP-FPM pool configuration from the
+standard locations (<code>/etc/php/*/fpm/pool.d/</code>, <code>/etc/php-fpm.d/</code>,
+<code>/usr/local/etc/php-fpm.d/</code>). Each pool is rendered as a card showing its user/group,
+listen socket and hardening directives (<code>open_basedir</code>, <code>chroot</code>,
+<code>listen.mode</code>), cross-referenced against real accounts and flagged for problems such as
+generic/shared/root users, world-writable sockets, shared home directories or a missing
+<code>open_basedir</code> fence. It also detects whether <code>/proc</code> lacks
+<code>hidepid</code> (so other tenants' processes and command-line arguments are visible). A
+best-effort, always-unconfirmed verdict summarises the result.</p>
 
 <h4>Metric logging and CSV export</h4>
 <p>A scheduled task records CPU (per-core %), RAM%, and disk% every 5 minutes to a lightweight

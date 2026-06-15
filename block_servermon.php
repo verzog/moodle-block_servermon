@@ -526,17 +526,43 @@ class block_servermon extends block_base {
      * on whether a multi-tenant server appears to isolate sites correctly.
      *
      * @param bool $islinux Whether the server is running Linux.
-     * @return array Keys: users, pools, verdict.
+     * @return array Keys: users, pools, procvis, verdict.
      */
     private function get_isolation_info(bool $islinux): array {
-        $users = $this->get_os_users($islinux);
-        $pools = $this->get_fpm_pools($islinux);
+        $users    = $this->get_os_users($islinux);
+        $poolinfo = $this->get_fpm_pools($islinux);
+        $procvis  = $this->get_proc_visibility($islinux);
+
+        $poolinfo['pools'] = $this->evaluate_pools($poolinfo['pools'], $users);
 
         return [
             'users'   => $users,
-            'pools'   => $pools,
-            'verdict' => $this->assess_isolation($pools),
+            'pools'   => $poolinfo,
+            'procvis' => $procvis,
+            'verdict' => $this->assess_isolation($poolinfo, $procvis),
         ];
+    }
+
+    /**
+     * The set of OS usernames treated as generic/shared web-server accounts.
+     *
+     * A PHP-FPM pool or PHP process running as one of these is not isolated
+     * from other sites that run as the same account.
+     *
+     * @return array List of lowercase usernames.
+     */
+    private function generic_users(): array {
+        return ['www-data', 'www', 'apache', 'apache2', 'nginx', 'httpd', 'nobody', 'daemon'];
+    }
+
+    /**
+     * Whether a username is a generic/shared web-server account.
+     *
+     * @param string $name Username to test.
+     * @return bool
+     */
+    private function is_generic_user(string $name): bool {
+        return in_array(strtolower($name), $this->generic_users(), true);
     }
 
     /**
@@ -547,10 +573,10 @@ class block_servermon extends block_base {
      * isolated shared server each hosted site has its own regular user.
      *
      * @param bool $islinux Whether the server is running Linux.
-     * @return array Keys: readable (bool), users (array), systemcount (int).
+     * @return array Keys: readable (bool), users (array), systemcount (int), byname (array).
      */
     private function get_os_users(bool $islinux): array {
-        $result = ['readable' => false, 'users' => [], 'systemcount' => 0];
+        $result = ['readable' => false, 'users' => [], 'systemcount' => 0, 'byname' => []];
 
         if (!$islinux || !is_readable('/etc/passwd')) {
             return $result;
@@ -572,15 +598,19 @@ class block_servermon extends block_base {
                 continue;
             }
             $uid   = (int) $parts[2];
+            $home  = $parts[5];
             $shell = trim($parts[6]);
             $islogin = !in_array($shell, $noshells, true);
+
+            // Keep every account in a name lookup so pool users can be cross-referenced.
+            $result['byname'][$parts[0]] = ['uid' => $uid, 'home' => $home];
 
             // Regular login accounts: UID 1000-65533 with a real shell. 65534 is "nobody".
             if ($uid >= 1000 && $uid < 65534 && $islogin) {
                 $result['users'][] = [
                     'name'  => $parts[0],
                     'uid'   => $uid,
-                    'home'  => $parts[5],
+                    'home'  => $home,
                     'shell' => $shell,
                 ];
             } else {
@@ -651,7 +681,7 @@ class block_servermon extends block_base {
      * A file may contain several [pool] sections; the [global] section is ignored.
      *
      * @param string $file Absolute path to a readable .conf file.
-     * @return array List of pools, each with name, user, group, listen.
+     * @return array List of pools (see new_pool() for the shape).
      */
     private function parse_fpm_pool_file(string $file): array {
         $lines = @file($file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
@@ -669,20 +699,75 @@ class block_servermon extends block_base {
             if (preg_match('/^\[([^\]]+)\]$/', $line, $m)) {
                 $name = ($m[1] === 'global') ? null : $m[1];
                 if ($name !== null && !isset($pools[$name])) {
-                    $pools[$name] = ['name' => $name, 'user' => '', 'group' => '', 'listen' => ''];
+                    $pools[$name] = $this->new_pool($name);
                 }
                 continue;
             }
             if ($name === null) {
                 continue;
             }
-            if (preg_match('/^(user|group|listen)\s*=\s*(.+)$/i', $line, $m)) {
-                $value = $this->clean_fpm_value($m[2], $name);
-                $pools[$name][strtolower($m[1])] = $value;
+            $eq = strpos($line, '=');
+            if ($eq === false) {
+                continue;
             }
+            $key   = strtolower(trim(substr($line, 0, $eq)));
+            $value = $this->clean_fpm_value(substr($line, $eq + 1), $name);
+            $pools[$name] = $this->apply_pool_directive($pools[$name], $key, $value);
         }
 
         return array_values($pools);
+    }
+
+    /**
+     * Build an empty pool record with all tracked fields defaulted.
+     *
+     * @param string $name Pool (section) name.
+     * @return array
+     */
+    private function new_pool(string $name): array {
+        return [
+            'name'              => $name,
+            'user'              => '',
+            'group'             => '',
+            'listen'            => '',
+            'listen_mode'       => '',
+            'listen_owner'      => '',
+            'listen_group'      => '',
+            'chroot'            => '',
+            'open_basedir'      => '',
+            'disable_functions' => '',
+            'limit_extensions'  => '',
+            'issues'            => [],
+            'ok'                => true,
+        ];
+    }
+
+    /**
+     * Store a known PHP-FPM directive into a pool record; ignore the rest.
+     *
+     * @param array $pool Pool record to update.
+     * @param string $key Lower-cased directive name.
+     * @param string $value Cleaned directive value.
+     * @return array Updated pool record.
+     */
+    private function apply_pool_directive(array $pool, string $key, string $value): array {
+        $map = [
+            'user'                               => 'user',
+            'group'                              => 'group',
+            'listen'                             => 'listen',
+            'listen.mode'                        => 'listen_mode',
+            'listen.owner'                       => 'listen_owner',
+            'listen.group'                       => 'listen_group',
+            'chroot'                             => 'chroot',
+            'security.limit_extensions'          => 'limit_extensions',
+            'php_admin_value[open_basedir]'      => 'open_basedir',
+            'php_value[open_basedir]'            => 'open_basedir',
+            'php_admin_value[disable_functions]' => 'disable_functions',
+        ];
+        if (isset($map[$key])) {
+            $pool[$map[$key]] = $value;
+        }
+        return $pool;
     }
 
     /**
@@ -719,61 +804,289 @@ class block_servermon extends block_base {
     }
 
     /**
-     * Assess whether the discovered PHP-FPM pools isolate sites from one another.
+     * Resolve an OS user by name from the parsed passwd map, falling back to
+     * posix_getpwnam() (which also consults NSS) when not found locally.
      *
-     * Best-effort heuristic — every verdict is marked as unconfirmed.
-     *
-     * @param array $poolinfo Pool info from get_fpm_pools().
-     * @return array Keys: level (good|partial|weak|single|unknown), label (string).
+     * @param string $name Username.
+     * @param array $users OS user info from get_os_users().
+     * @return array|null Keys: uid (int), home (string) — or null if unknown.
      */
-    private function assess_isolation(array $poolinfo): array {
+    private function lookup_user(string $name, array $users): ?array {
+        if (!empty($users['byname'][$name])) {
+            return $users['byname'][$name];
+        }
+        if (function_exists('posix_getpwnam')) {
+            $info = @posix_getpwnam($name);
+            if ($info) {
+                return ['uid' => (int) $info['uid'], 'home' => $info['dir'] ?? ''];
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Evaluate every pool, annotating each with an 'issues' list and 'ok' flag.
+     *
+     * @param array $pools Raw pools from parse_fpm_pool_file().
+     * @param array $users OS user info from get_os_users().
+     * @return array Pools with 'issues' and 'ok' populated.
+     */
+    private function evaluate_pools(array $pools, array $users): array {
+        $usercounts = [];
+        $homecounts = [];
+        $infos      = [];
+
+        foreach ($pools as $i => $pool) {
+            $user = $pool['user'];
+            if ($user === '' || strpos($user, '$') !== false) {
+                continue;
+            }
+            $usercounts[$user] = ($usercounts[$user] ?? 0) + 1;
+            $info = $this->lookup_user($user, $users);
+            $infos[$i] = $info;
+            if ($info !== null && $info['home'] !== '') {
+                $homecounts[$info['home']] = ($homecounts[$info['home']] ?? 0) + 1;
+            }
+        }
+
+        foreach ($pools as $i => $pool) {
+            $pool['issues'] = $this->pool_issues($pool, $infos[$i] ?? null, $usercounts, $homecounts);
+            $pool['ok']     = empty($pool['issues']);
+            $pools[$i]      = $pool;
+        }
+
+        return $pools;
+    }
+
+    /**
+     * Determine the isolation issues for a single pool.
+     *
+     * @param array $pool Pool record.
+     * @param array|null $userinfo Resolved OS user (uid, home) or null.
+     * @param array $usercounts Map of pool user => number of pools using it.
+     * @param array $homecounts Map of home dir => number of pool users sharing it.
+     * @return array List of issue codes (see issue_severity()).
+     */
+    private function pool_issues(array $pool, ?array $userinfo, array $usercounts, array $homecounts): array {
+        $issues = [];
+        $user   = $pool['user'];
+
+        if ($user === '' || strpos($user, '$') !== false) {
+            return ['undetermined'];
+        }
+
+        if (strtolower($user) === 'root') {
+            $issues[] = 'root';
+        } else if ($this->is_generic_user($user)) {
+            $issues[] = 'generic';
+        } else if ($userinfo === null) {
+            $issues[] = 'nouser';
+        } else {
+            if ($userinfo['uid'] < 1000) {
+                $issues[] = 'systemuser';
+            }
+            if (($usercounts[$user] ?? 0) > 1) {
+                $issues[] = 'shareduser';
+            }
+            if ($userinfo['home'] !== '' && ($homecounts[$userinfo['home']] ?? 0) > 1) {
+                $issues[] = 'sharedhome';
+            }
+        }
+
+        if ($this->socket_world_writable($pool)) {
+            $issues[] = 'opensocket';
+        }
+        if ($pool['open_basedir'] === '' && $pool['chroot'] === '') {
+            $issues[] = 'noopenbasedir';
+        }
+
+        return $issues;
+    }
+
+    /**
+     * Classify an issue code by how badly it breaks isolation.
+     *
+     * @param string $code Issue code from pool_issues().
+     * @return string One of: hard, soft, undetermined.
+     */
+    private function issue_severity(string $code): string {
+        $hard = ['generic', 'root', 'nouser', 'shareduser', 'opensocket'];
+        if (in_array($code, $hard, true)) {
+            return 'hard';
+        }
+        if ($code === 'undetermined') {
+            return 'undetermined';
+        }
+        return 'soft';
+    }
+
+    /**
+     * Whether a pool's Unix listen socket is world-writable (any local user
+     * could connect to the pool). TCP listeners are not assessed here.
+     *
+     * @param array $pool Pool record.
+     * @return bool
+     */
+    private function socket_world_writable(array $pool): bool {
+        $listen = $pool['listen'];
+        if ($listen === '') {
+            return false;
+        }
+        // Only Unix sockets carry filesystem permissions.
+        if ($listen[0] !== '/' && stripos($listen, '.sock') === false) {
+            return false;
+        }
+        $mode = $pool['listen_mode'];
+        if ($mode === '') {
+            return false; // FPM default 0660 is private to owner/group.
+        }
+        $digits = preg_replace('/\D/', '', $mode);
+        if ($digits === '') {
+            return false;
+        }
+        // World-write bit set means any local account can connect to the pool.
+        return ((int) substr($digits, -1) & 2) === 2;
+    }
+
+    /**
+     * Detect whether this process can see other users' processes via /proc.
+     *
+     * On a hardened multi-tenant server /proc is mounted with hidepid, so a
+     * non-root account only sees its own processes. If we can read the stat of
+     * processes owned by other (non-root) users, their command lines — which
+     * often carry secrets — are exposed across tenants.
+     *
+     * @param bool $islinux Whether the server is running Linux.
+     * @return array Keys: checked (bool), count (int), foreign (array of names).
+     */
+    private function get_proc_visibility(bool $islinux): array {
+        $result = ['checked' => false, 'count' => 0, 'foreign' => []];
+
+        if (!$islinux) {
+            return $result;
+        }
+
+        $myuid = $this->current_euid();
+        if ($myuid < 0) {
+            return $result; // Cannot reliably compare ownership.
+        }
+
+        $dirs = @glob('/proc/[0-9]*', GLOB_ONLYDIR);
+        if (!$dirs) {
+            return $result;
+        }
+        $result['checked'] = true;
+
+        $foreign = [];
+        foreach ($dirs as $dir) {
+            $owner = @fileowner($dir);
+            if ($owner === false || $owner === $myuid || $owner === 0) {
+                continue;
+            }
+            // Only count it as a leak if the process detail is actually readable.
+            if (@is_readable($dir . '/stat')) {
+                $foreign[$this->uid_name($owner)] = true;
+            }
+        }
+
+        $result['foreign'] = array_keys($foreign);
+        $result['count']   = count($foreign);
+        return $result;
+    }
+
+    /**
+     * Return the effective UID of the current process, or -1 if unknown.
+     *
+     * @return int
+     */
+    private function current_euid(): int {
+        if (function_exists('posix_geteuid')) {
+            return posix_geteuid();
+        }
+        if (function_exists('getmyuid')) {
+            $uid = getmyuid();
+            return $uid !== false ? $uid : -1;
+        }
+        return -1;
+    }
+
+    /**
+     * Resolve a numeric UID to a username, falling back to the number.
+     *
+     * @param int $uid User ID.
+     * @return string
+     */
+    private function uid_name(int $uid): string {
+        if (function_exists('posix_getpwuid')) {
+            $info = @posix_getpwuid($uid);
+            if ($info && !empty($info['name'])) {
+                return $info['name'];
+            }
+        }
+        return (string) $uid;
+    }
+
+    /**
+     * Whether /proc visibility indicates a cross-tenant process leak.
+     *
+     * @param array $procvis Result from get_proc_visibility().
+     * @return bool
+     */
+    private function procvis_leaks(array $procvis): bool {
+        return !empty($procvis['checked']) && $procvis['count'] > 0;
+    }
+
+    /**
+     * Assess whether the server appears to isolate sites from one another.
+     *
+     * Combines the user this request runs as, per-pool issues, unreadable
+     * config, and /proc process visibility. Best-effort — always unconfirmed.
+     *
+     * @param array $poolinfo Pool info from get_fpm_pools() with evaluated pools.
+     * @param array $procvis Result from get_proc_visibility().
+     * @return array Keys: level, label.
+     */
+    private function assess_isolation(array $poolinfo, array $procvis): array {
         $pools      = $poolinfo['pools'];
         $incomplete = !empty($poolinfo['unreadable']);
+        $current    = (string) ($poolinfo['currentuser'] ?? '');
+
+        // The account THIS request runs as is the most direct signal.
+        if ($current !== '' && ($this->is_generic_user($current) || strtolower($current) === 'root')) {
+            return ['level' => 'weak', 'label' => get_string('iso_verdict_current', 'block_servermon', $current)];
+        }
 
         if (empty($pools)) {
+            if ($this->procvis_leaks($procvis)) {
+                return ['level' => 'partial', 'label' => get_string('iso_verdict_proconly', 'block_servermon', $procvis['count'])];
+            }
             $key = $incomplete ? 'iso_verdict_incomplete' : 'iso_verdict_unknown';
             return ['level' => $incomplete ? 'incomplete' : 'unknown', 'label' => get_string($key, 'block_servermon')];
         }
 
-        $generic = ['www-data', 'www', 'apache', 'apache2', 'nginx', 'httpd', 'nobody', 'daemon'];
-        $users   = [];
-        $genericfound = [];
-        $unresolved = 0;
+        $hard = false;
+        $soft = false;
+        $undetermined = false;
         foreach ($pools as $pool) {
-            $user = $pool['user'];
-            // A blank or still-variable user means the directive lives in an
-            // include fragment we did not follow — treat it as undetermined.
-            if ($user === '' || strpos($user, '$') !== false) {
-                $unresolved++;
-                continue;
-            }
-            $users[] = $user;
-            if (in_array(strtolower($user), $generic, true)) {
-                $genericfound[$user] = true;
+            foreach ($pool['issues'] as $code) {
+                $sev = $this->issue_severity($code);
+                $hard = $hard || ($sev === 'hard');
+                $soft = $soft || ($sev === 'soft');
+                $undetermined = $undetermined || ($sev === 'undetermined');
             }
         }
 
-        // A generic web user means no isolation, regardless of completeness.
-        if (!empty($genericfound)) {
-            return [
-                'level' => 'weak',
-                'label' => get_string('iso_verdict_weak', 'block_servermon', implode(', ', array_keys($genericfound))),
-            ];
+        if ($hard) {
+            return ['level' => 'weak', 'label' => get_string('iso_verdict_weak', 'block_servermon')];
         }
-
-        // If any pool's user could not be determined, isolation cannot be confirmed.
-        if ($unresolved > 0 || $incomplete) {
+        if ($undetermined || $incomplete) {
             return ['level' => 'incomplete', 'label' => get_string('iso_verdict_incomplete', 'block_servermon')];
         }
-
-        $unique    = array_unique($users);
-        $poolcount = count($pools);
-
-        if ($poolcount >= 2 && count($unique) === $poolcount) {
-            return ['level' => 'good', 'label' => get_string('iso_verdict_good', 'block_servermon')];
-        }
-        if ($poolcount >= 2) {
+        if ($soft || $this->procvis_leaks($procvis)) {
             return ['level' => 'partial', 'label' => get_string('iso_verdict_partial', 'block_servermon')];
+        }
+        if (count($pools) >= 2) {
+            return ['level' => 'good', 'label' => get_string('iso_verdict_good', 'block_servermon')];
         }
         return ['level' => 'single', 'label' => get_string('iso_verdict_single', 'block_servermon')];
     }
@@ -1113,14 +1426,38 @@ JSEOF;
     private function render_isolation_section(array $iso): string {
         $label = get_string('iso_toggle', 'block_servermon');
 
-        $body  = $this->render_isolation_users($iso['users']);
+        $body  = $this->render_isolation_current($iso['pools']);
+        $body .= $this->render_isolation_users($iso['users']);
         $body .= $this->render_isolation_pools($iso['pools']);
+        $body .= $this->render_isolation_procvis($iso['procvis']);
         $body .= $this->render_isolation_verdict($iso['verdict']);
 
         return '<details class="bsm-details">'
             . '<summary class="bsm-summary bsm-summary-debug">' . $label . '</summary>'
             . '<div class="bsm-iso-body">' . $body . '</div>'
             . '</details>';
+    }
+
+    /**
+     * Render the banner stating which OS user this request runs as.
+     *
+     * @param array $p Pool info from get_fpm_pools().
+     * @return string HTML output.
+     */
+    private function render_isolation_current(array $p): string {
+        if ($p['currentuser'] === null) {
+            return '';
+        }
+        $bad   = $this->is_generic_user($p['currentuser']) || strtolower($p['currentuser']) === 'root';
+        $alert = $bad ? 'bsm-alert-warn' : 'bsm-alert-info';
+        $key   = $bad ? 'iso_current_generic' : 'iso_current_dedicated';
+
+        return '<div class="bsm-debug-alert ' . $alert . '">'
+            . get_string($key, 'block_servermon', (object) [
+                'user' => htmlspecialchars($p['currentuser']),
+                'sapi' => htmlspecialchars($p['sapi']),
+            ])
+            . '</div>';
     }
 
     /**
@@ -1175,38 +1512,15 @@ JSEOF;
     private function render_isolation_pools(array $p): string {
         $html = '<h6 class="bsm-debug-section-title">' . get_string('iso_pools_title', 'block_servermon') . '</h6>';
 
-        if ($p['currentuser'] !== null) {
-            $html .= '<div class="bsm-iso-intro">' . get_string('iso_current', 'block_servermon', (object) [
-                'sapi' => htmlspecialchars($p['sapi']),
-                'user' => htmlspecialchars($p['currentuser']),
-            ]) . '</div>';
-        }
-
         if (empty($p['pools'])) {
             $key = $p['found'] ? 'iso_pools_unreadable' : 'iso_pools_none';
             return $html . '<div class="bsm-iso-note">' . get_string($key, 'block_servermon') . '</div>';
         }
 
         $html .= '<div class="bsm-iso-intro">' . get_string('iso_pools_intro', 'block_servermon') . '</div>';
-        $html .= '<table class="bsm-info-table bsm-iso-table">';
-        $html .= '<tr>'
-            . '<td class="bsm-info-key">' . get_string('iso_pool_name', 'block_servermon') . '</td>'
-            . '<td class="bsm-info-key">' . get_string('iso_pool_user', 'block_servermon') . '</td>'
-            . '<td class="bsm-info-key">' . get_string('iso_pool_listen', 'block_servermon') . '</td>'
-            . '</tr>';
         foreach ($p['pools'] as $pool) {
-            $user = $pool['user'] !== '' ? $pool['user'] : '—';
-            if ($pool['group'] !== '' && $pool['group'] !== $pool['user']) {
-                $user .= ':' . $pool['group'];
-            }
-            $listen = $pool['listen'] !== '' ? $pool['listen'] : '—';
-            $html .= '<tr>'
-                . '<td class="bsm-info-val">' . htmlspecialchars($pool['name']) . '</td>'
-                . '<td class="bsm-info-val">' . htmlspecialchars($user) . '</td>'
-                . '<td class="bsm-info-val">' . htmlspecialchars($listen) . '</td>'
-                . '</tr>';
+            $html .= $this->render_pool_card($pool);
         }
-        $html .= '</table>';
 
         if ($p['unreadable'] > 0) {
             $html .= '<div class="bsm-iso-note">'
@@ -1215,6 +1529,97 @@ JSEOF;
         }
 
         return $html;
+    }
+
+    /**
+     * Render a single PHP-FPM pool as a card with its hardening status.
+     *
+     * @param array $pool Evaluated pool record.
+     * @return string HTML output.
+     */
+    private function render_pool_card(array $pool): string {
+        $user = $pool['user'] !== '' ? $pool['user'] : '—';
+        if ($pool['group'] !== '' && $pool['group'] !== $pool['user']) {
+            $user .= ':' . $pool['group'];
+        }
+        $listen = $pool['listen'] !== '' ? $pool['listen'] : '—';
+
+        $badge = $pool['ok']
+            ? '<span class="bsm-badge bsm-ok">' . get_string('iso_flag_ok', 'block_servermon') . '</span>'
+            : '<span class="bsm-badge bsm-high">' . get_string('iso_pool_issues', 'block_servermon') . '</span>';
+
+        $html  = '<div class="bsm-iso-pool">';
+        $html .= '<div class="bsm-iso-pool-head">'
+            . '<span class="bsm-iso-pool-name">' . htmlspecialchars($pool['name']) . '</span>'
+            . $badge
+            . '</div>';
+        $html .= '<div class="bsm-iso-pool-meta">'
+            . get_string('iso_pool_meta', 'block_servermon', (object) [
+                'user'   => htmlspecialchars($user),
+                'listen' => htmlspecialchars($listen),
+            ])
+            . '</div>';
+        $html .= '<div class="bsm-iso-pool-meta">' . $this->render_pool_hardening($pool) . '</div>';
+
+        if (!empty($pool['issues'])) {
+            $html .= '<div class="bsm-iso-flags">';
+            foreach ($pool['issues'] as $code) {
+                $html .= '<span class="bsm-iso-flag">'
+                    . htmlspecialchars(get_string('iso_flag_' . $code, 'block_servermon'))
+                    . '</span>';
+            }
+            $html .= '</div>';
+        }
+
+        $html .= '</div>';
+        return $html;
+    }
+
+    /**
+     * Render the per-pool hardening summary line (open_basedir, chroot, socket mode).
+     *
+     * @param array $pool Evaluated pool record.
+     * @return string HTML output.
+     */
+    private function render_pool_hardening(array $pool): string {
+        $dash  = '—';
+        $parts = [];
+        $parts[] = get_string('iso_hard_openbasedir', 'block_servermon') . ': '
+            . ($pool['open_basedir'] !== '' ? htmlspecialchars($pool['open_basedir']) : $dash);
+        if ($pool['chroot'] !== '') {
+            $parts[] = get_string('iso_hard_chroot', 'block_servermon') . ': ' . htmlspecialchars($pool['chroot']);
+        }
+        if ($pool['listen_mode'] !== '') {
+            $parts[] = get_string('iso_hard_mode', 'block_servermon') . ': ' . htmlspecialchars($pool['listen_mode']);
+        }
+        return implode(' · ', $parts);
+    }
+
+    /**
+     * Render the /proc process-visibility (hidepid) sub-section.
+     *
+     * @param array $pv Result from get_proc_visibility().
+     * @return string HTML output.
+     */
+    private function render_isolation_procvis(array $pv): string {
+        if (empty($pv['checked'])) {
+            return '';
+        }
+
+        $html = '<h6 class="bsm-debug-section-title">' . get_string('iso_proc_title', 'block_servermon') . '</h6>';
+
+        if ($pv['count'] === 0) {
+            return $html . '<div class="bsm-debug-alert bsm-alert-info">'
+                . get_string('iso_proc_ok', 'block_servermon') . '</div>';
+        }
+
+        $names = implode(', ', array_map('htmlspecialchars', array_slice($pv['foreign'], 0, 8)));
+        return $html . '<div class="bsm-debug-alert bsm-alert-warn">'
+            . get_string('iso_proc_leak', 'block_servermon', (object) [
+                'count' => $pv['count'],
+                'users' => $names,
+            ])
+            . '</div>';
     }
 
     /**

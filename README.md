@@ -89,7 +89,11 @@ Collapsed by default. Click **Server Info ▾** to expand. Contains:
 
 Collapsed by default. Click **OS users & PHP-FPM pools — shared-server isolation ▾** to expand.
 
-This section helps you confirm that a multi-tenant (shared) server isolates each hosted site correctly: ideally every site runs under its own operating-system user **and** its own PHP-FPM pool listening on its own socket, so one site cannot read another's files or starve it of workers.
+This section helps you confirm that a multi-tenant (shared) server isolates each hosted site correctly: ideally every site runs under its own operating-system user **and** its own PHP-FPM pool — fenced by `open_basedir`/`chroot`, listening on its own private socket — so one site cannot read another's files, connect to its pool, or enumerate its processes.
+
+#### This request's user
+
+A banner at the top shows which OS user **this Moodle request** is running as, and via which PHP SAPI. This is the single most relevant fact: if Moodle itself runs as a generic web account (`www-data`, `nginx`, …) or as `root`, the banner turns amber and the overall verdict is downgraded to **Weak**, because this site shares an account with others regardless of how the rest of the server looks.
 
 #### Operating-system users
 
@@ -105,32 +109,42 @@ If `/etc/passwd` is not readable (some locked-down hosts), the list shows as una
 
 #### PHP-FPM pools
 
-Scans the standard pool configuration directories (`/etc/php/*/fpm/pool.d/`, `/etc/php-fpm.d/`, `/usr/local/etc/php-fpm.d/`) and lists each pool with the OS user/group it runs as and its listen socket. The user the current request is running under (and the PHP SAPI) is shown above the table.
+Scans the standard pool configuration directories (`/etc/php/*/fpm/pool.d/`, `/etc/php-fpm.d/`, `/usr/local/etc/php-fpm.d/`) and renders each pool as a card showing its user/group, listen socket, and the hardening directives it sets (`open_basedir`, `chroot`, socket `listen.mode`). Each pool gets an **Isolated** badge or a **Review** badge with one or more flags:
 
-| Column | Description |
+| Flag | Meaning |
 |---|---|
-| **Pool** | Pool name from the `[pool]` section header |
-| **User (:group)** | The `user` (and `group`, if different) the pool runs as |
-| **Listen** | The `listen` socket or address |
+| **Runs as a generic web user** | Pool `user` is `www-data`/`nginx`/`apache`/… — shared with other sites |
+| **Runs as root** | Pool runs as `root` |
+| **User not found in /etc/passwd** | The configured `user` doesn't resolve to a real account |
+| **Runs as a system account (UID < 1000)** | Not a dedicated per-site user |
+| **Shares its OS user with another pool** | Two pools run as the same user |
+| **Shares a home directory with another pool** | Two pool users have the same home |
+| **World-writable listen socket** | `listen.mode` has the world-write bit set — any local user can connect to the pool |
+| **No open_basedir or chroot fence** | Nothing restricts the pool to its own files |
+| **User set elsewhere — undetermined** | `user` is blank or set in an unfollowed `include` |
 
 If no pool files are found, the server likely uses mod_php or a single pool. If pool files exist but are not readable, that is reported too.
 
+#### Process visibility (`/proc` hidepid)
+
+Checks whether this PHP process can read the `/proc/[pid]/stat` of processes owned by **other** (non-root) users. If it can, `/proc` is not mounted with `hidepid`, meaning any tenant can enumerate every other tenant's processes and read their command-line arguments (which routinely contain DB passwords, API tokens, etc.). The section reports either "only its own processes" (hardened) or the count and names of the other users whose processes are visible. This is the signal behind, for example, a YunoHost Moodle seeing Uptime Kuma's processes.
+
 #### Isolation assessment
 
-A best-effort verdict (always marked *unconfirmed*, like the Hosting Type heuristic):
+A best-effort verdict (always marked *unconfirmed*, like the Hosting Type heuristic), combining the current request's user, the per-pool flags, unreadable config, and `/proc` visibility:
 
 | Verdict | Meaning |
 |---|---|
-| **Good** | Two or more pools, each running as its own dedicated, non-generic user |
-| **Partial** | Multiple pools exist but some share an OS user |
-| **Weak** | One or more pools run as a generic web-server user (`www-data`, `www`, `nginx`, `apache`, `nobody`, …) — no isolation |
+| **Good** | Two or more pools, each a dedicated user **and** fenced (`open_basedir`/`chroot`, private socket); no cross-tenant `/proc` leak |
+| **Partial** | Pools run as dedicated users but some hardening is missing — no `open_basedir`/`chroot`, a shared home, or cross-tenant `/proc` visibility |
+| **Weak** | A serious problem: this request (or a pool) runs as a generic/shared user or `root`, a world-open socket, or a missing account |
 | **Single** | A single pool running as a dedicated user — fine for one tenant, not multi-site isolation |
 | **Incomplete** | Some pool files were unreadable, or a pool's `user`/`group` lives in an `include` fragment that wasn't followed — isolation can't be fully confirmed |
 | **Unknown** | No pool configuration could be read |
 
 `$pool` variables in directives (e.g. `user = $pool`) are resolved to the pool name, and php.ini-style inline comments are stripped, before assessing.
 
-> This is a configuration audit, not a live security guarantee. It reads the FPM config files as written; it does not verify the running master process. Treat it as a checklist aid.
+> This is a configuration audit, not a live security guarantee. It reads the FPM config files as written and the kernel's process table; it does not verify the running FPM master. Treat it as a checklist aid.
 
 ---
 
