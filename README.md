@@ -123,9 +123,12 @@ A best-effort verdict (always marked *unconfirmed*, like the Hosting Type heuris
 |---|---|
 | **Good** | Two or more pools, each running as its own dedicated, non-generic user |
 | **Partial** | Multiple pools exist but some share an OS user |
-| **Weak** | One or more pools run as a generic web-server user (`www-data`, `nginx`, `apache`, `nobody`, …) — no isolation |
+| **Weak** | One or more pools run as a generic web-server user (`www-data`, `www`, `nginx`, `apache`, `nobody`, …) — no isolation |
 | **Single** | A single pool running as a dedicated user — fine for one tenant, not multi-site isolation |
+| **Incomplete** | Some pool files were unreadable, or a pool's `user`/`group` lives in an `include` fragment that wasn't followed — isolation can't be fully confirmed |
 | **Unknown** | No pool configuration could be read |
+
+`$pool` variables in directives (e.g. `user = $pool`) are resolved to the pool name, and php.ini-style inline comments are stripped, before assessing.
 
 > This is a configuration audit, not a live security guarantee. It reads the FPM config files as written; it does not verify the running master process. Treat it as a checklist aid.
 

@@ -603,6 +603,7 @@ class block_servermon extends block_base {
     private function get_fpm_pools(bool $islinux): array {
         $result = [
             'found'       => false,
+            'unreadable'  => 0,
             'pools'       => [],
             'sapi'        => php_sapi_name(),
             'currentuser' => $this->current_process_user(),
@@ -631,6 +632,7 @@ class block_servermon extends block_base {
 
         foreach ($files as $file) {
             if (!is_readable($file)) {
+                $result['unreadable']++;
                 continue;
             }
             foreach ($this->parse_fpm_pool_file($file) as $pool) {
@@ -675,11 +677,30 @@ class block_servermon extends block_base {
                 continue;
             }
             if (preg_match('/^(user|group|listen)\s*=\s*(.+)$/i', $line, $m)) {
-                $pools[$name][strtolower($m[1])] = trim($m[2]);
+                $value = $this->clean_fpm_value($m[2], $name);
+                $pools[$name][strtolower($m[1])] = $value;
             }
         }
 
         return array_values($pools);
+    }
+
+    /**
+     * Normalise a raw PHP-FPM directive value.
+     *
+     * Strips php.ini-style inline comments (';' always starts one; '#' after
+     * whitespace) and interpolates the '$pool' variable with the pool name,
+     * exactly as PHP-FPM does at runtime.
+     *
+     * @param string $value Raw value captured from the config line.
+     * @param string $poolname The enclosing pool (section) name.
+     * @return string Cleaned value.
+     */
+    private function clean_fpm_value(string $value, string $poolname): string {
+        $value = preg_replace('/;.*$/', '', $value);
+        $value = preg_replace('/\s+#.*$/', '', $value);
+        $value = trim($value);
+        return str_replace('$pool', $poolname, $value);
     }
 
     /**
@@ -706,18 +727,24 @@ class block_servermon extends block_base {
      * @return array Keys: level (good|partial|weak|single|unknown), label (string).
      */
     private function assess_isolation(array $poolinfo): array {
-        $pools = $poolinfo['pools'];
+        $pools      = $poolinfo['pools'];
+        $incomplete = !empty($poolinfo['unreadable']);
+
         if (empty($pools)) {
-            return ['level' => 'unknown', 'label' => get_string('iso_verdict_unknown', 'block_servermon')];
+            $key = $incomplete ? 'iso_verdict_incomplete' : 'iso_verdict_unknown';
+            return ['level' => $incomplete ? 'incomplete' : 'unknown', 'label' => get_string($key, 'block_servermon')];
         }
 
-        $generic = ['www-data', 'apache', 'apache2', 'nginx', 'httpd', 'nobody', 'daemon'];
+        $generic = ['www-data', 'www', 'apache', 'apache2', 'nginx', 'httpd', 'nobody', 'daemon'];
         $users   = [];
         $genericfound = [];
+        $unresolved = 0;
         foreach ($pools as $pool) {
             $user = $pool['user'];
-            // Skip blank or unresolved variable users (e.g. "$pool").
-            if ($user === '' || strpos($user, '$') === 0) {
+            // A blank or still-variable user means the directive lives in an
+            // include fragment we did not follow — treat it as undetermined.
+            if ($user === '' || strpos($user, '$') !== false) {
+                $unresolved++;
                 continue;
             }
             $users[] = $user;
@@ -726,11 +753,17 @@ class block_servermon extends block_base {
             }
         }
 
+        // A generic web user means no isolation, regardless of completeness.
         if (!empty($genericfound)) {
             return [
                 'level' => 'weak',
                 'label' => get_string('iso_verdict_weak', 'block_servermon', implode(', ', array_keys($genericfound))),
             ];
+        }
+
+        // If any pool's user could not be determined, isolation cannot be confirmed.
+        if ($unresolved > 0 || $incomplete) {
+            return ['level' => 'incomplete', 'label' => get_string('iso_verdict_incomplete', 'block_servermon')];
         }
 
         $unique    = array_unique($users);
@@ -1175,6 +1208,12 @@ JSEOF;
         }
         $html .= '</table>';
 
+        if ($p['unreadable'] > 0) {
+            $html .= '<div class="bsm-iso-note">'
+                . get_string('iso_pools_some_unreadable', 'block_servermon', $p['unreadable'])
+                . '</div>';
+        }
+
         return $html;
     }
 
@@ -1185,7 +1224,7 @@ JSEOF;
      * @return string HTML output.
      */
     private function render_isolation_verdict(array $verdict): string {
-        $alert = $verdict['level'] === 'weak' ? 'bsm-alert-warn' : 'bsm-alert-info';
+        $alert = in_array($verdict['level'], ['weak', 'incomplete'], true) ? 'bsm-alert-warn' : 'bsm-alert-info';
 
         return '<h6 class="bsm-debug-section-title">' . get_string('iso_verdict_title', 'block_servermon') . '</h6>'
             . '<div class="bsm-debug-alert ' . $alert . '">' . htmlspecialchars($verdict['label']) . '</div>';
