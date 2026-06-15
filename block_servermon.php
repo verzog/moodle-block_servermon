@@ -1246,26 +1246,40 @@ class block_servermon extends block_base {
     if (!btn) { return; }
     var root = btn.closest('.block-servermon');
     if (!root) { return; }
-    var changed = [];
-    function expand() {
+    var opened = [];
+    var hidden = [];
+    function prepare() {
+        // Expand static detail sections (leave the live process panel as-is).
         var items = root.querySelectorAll('details.bsm-details');
         for (var i = 0; i < items.length; i++) {
             var d = items[i];
             if (d.id && d.id.indexOf('bsm-proc-details') === 0) { continue; }
-            if (!d.open) { d.open = true; changed.push(d); }
+            if (!d.open) { d.open = true; opened.push(d); }
+        }
+        // Collapse everything except the block by hiding siblings up the tree,
+        // so the rest of the dashboard does not print blank pages.
+        var el = root;
+        while (el && el.parentNode && el !== document.body) {
+            var sibs = el.parentNode.children;
+            for (var j = 0; j < sibs.length; j++) {
+                var sib = sibs[j];
+                if (sib !== el && sib.style.display !== 'none') {
+                    hidden.push([sib, sib.style.display]);
+                    sib.style.display = 'none';
+                }
+            }
+            el = el.parentNode;
         }
     }
     function restore() {
-        for (var i = 0; i < changed.length; i++) { changed[i].open = false; }
-        changed = [];
+        for (var i = 0; i < hidden.length; i++) { hidden[i][0].style.display = hidden[i][1]; }
+        hidden = [];
+        for (var k = 0; k < opened.length; k++) { opened[k].open = false; }
+        opened = [];
     }
-    window.addEventListener('beforeprint', expand);
+    window.addEventListener('beforeprint', prepare);
     window.addEventListener('afterprint', restore);
-    btn.addEventListener('click', function(e) {
-        e.preventDefault();
-        expand();
-        window.print();
-    });
+    btn.addEventListener('click', function(e) { e.preventDefault(); window.print(); });
 })();
 JSEOF;
         // phpcs:enable
