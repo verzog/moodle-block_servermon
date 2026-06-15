@@ -539,20 +539,7 @@
 }
 
 @media print {
-    body * {
-        visibility: hidden;
-    }
-
-    .block-servermon,
-    .block-servermon * {
-        visibility: visible;
-    }
-
     .block-servermon {
-        position: absolute;
-        left: 0;
-        top: 0;
-        width: 100%;
         font-size: 0.9rem;
         -webkit-print-color-adjust: exact;
         print-color-adjust: exact;
