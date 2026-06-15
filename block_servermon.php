@@ -1192,6 +1192,7 @@ class block_servermon extends block_base {
         $togglelabel = get_string('info_toggle', 'block_servermon');
 
         $html  = '<div class="block-servermon">';
+        $html .= $this->render_print_header($m);
         $html .= $this->render_metric_row('cpu', $m['cpu']);
         $html .= $this->render_metric_row('ram', $m['ram']);
         $html .= $this->render_metric_row('disk', $m['disk']);
@@ -1203,9 +1204,78 @@ class block_servermon extends block_base {
         $html .= $this->render_isolation_section($m['isolation']);
         $html .= $this->render_debug_footer();
         $html .= $this->render_csv_link();
+        $html .= $this->render_print_button();
         $html .= '</div>';
 
         return $html;
+    }
+
+    /**
+     * Render a print-only document header (hidden on screen).
+     *
+     * @param array $m Metrics array from collect_metrics().
+     * @return string HTML output.
+     */
+    private function render_print_header(array $m): string {
+        $text = get_string('print_header', 'block_servermon', (object) [
+            'name' => get_string('pluginname', 'block_servermon'),
+            'host' => $m['hostname'],
+            'date' => $m['time'],
+        ]);
+        return '<div class="bsm-print-header">' . htmlspecialchars($text) . '</div>';
+    }
+
+    /**
+     * Render the "Print / Save as PDF" button and its print helper script.
+     *
+     * The button triggers window.print(); a print stylesheet isolates the
+     * block. Collapsed static sections are expanded for the print and then
+     * restored, but the live process panel is left as-is.
+     *
+     * @return string HTML output.
+     */
+    private function render_print_button(): string {
+        $instanceid = (int) $this->instance->id;
+        $btnid      = 'bsm-print-' . $instanceid;
+
+        // Inline JS is intentionally narrow: expand-for-print then window.print().
+        // phpcs:disable moodle.Files.InlineJavaScript.Found
+        $js = <<<JSEOF
+(function() {
+    var btn = document.getElementById('{$btnid}');
+    if (!btn) { return; }
+    var root = btn.closest('.block-servermon');
+    if (!root) { return; }
+    var changed = [];
+    function expand() {
+        var items = root.querySelectorAll('details.bsm-details');
+        for (var i = 0; i < items.length; i++) {
+            var d = items[i];
+            if (d.id && d.id.indexOf('bsm-proc-details') === 0) { continue; }
+            if (!d.open) { d.open = true; changed.push(d); }
+        }
+    }
+    function restore() {
+        for (var i = 0; i < changed.length; i++) { changed[i].open = false; }
+        changed = [];
+    }
+    window.addEventListener('beforeprint', expand);
+    window.addEventListener('afterprint', restore);
+    btn.addEventListener('click', function(e) {
+        e.preventDefault();
+        expand();
+        window.print();
+    });
+})();
+JSEOF;
+        // phpcs:enable
+        $this->page->requires->js_init_code($js, true);
+
+        return '<div class="bsm-print-wrap">'
+            . '<button type="button" id="' . $btnid . '" class="bsm-print-btn">'
+            . get_string('print_button', 'block_servermon')
+            . '</button>'
+            . '</div>';
     }
 
     /**
