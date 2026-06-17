@@ -177,6 +177,41 @@ The panel also flags common misconfigurations:
 - **Missing extension** — if Redis is intended (active or configured) but the PHP `redis` extension is not loaded, a warning is shown.
 - **File sessions** — a warning is shown if the file-based handler is in use with no Redis settings present, as this can become a bottleneck under load.
 
+##### Redis sharing & security signals
+
+When Redis is active or configured, the panel adds best-effort findings derived from `config.php` alone (no live connection is made) to highlight a shared or exposed Redis:
+
+- **No key prefix** — `session_redis_prefix` is empty, so a Redis instance shared with another Moodle site would let the two collide with or evict each other's session keys. Set a unique prefix per site.
+- **Remote host** — `session_redis_host` is not a loopback address or unix socket, which typically means a shared Redis server.
+- **No password** — a non-local host with no `session_redis_auth` set: an unauthenticated Redis reachable off-box is a security risk.
+
+#### PHP OPcache
+
+Reports OPcache health (skipped gracefully when the extension is missing or `opcache.restrict_api` blocks the status API):
+
+| Card | Description |
+|---|---|
+| **Hit rate** | OPcache hit rate percentage |
+| **Memory used** | Percentage of the OPcache memory pool in use |
+| **Cached scripts** | Number of scripts currently cached |
+| **JIT** | Whether the JIT compiler is active |
+
+Advisory notes flag out-of-memory restarts (raise `opcache.memory_consumption`), near-full key slots (raise `opcache.max_accelerated_files`), and `opcache.validate_timestamps` being on (extra `stat()` I/O on a stable production site). A warning is shown if OPcache is installed but disabled.
+
+#### Production-readiness checks
+
+Evaluates Moodle settings that should be tuned for a live site, each marked **OK** or **Review**:
+
+- **Theme designer mode** (`themedesignermode`) — disables CSS/JS caching; should be off.
+- **Debug display** (`debugdisplay`) — leaks paths, SQL and stack traces to users; should be off.
+- **Debug level** (`debug`) — a developer-level setting is costly and verbose on a live site.
+- **JavaScript / template / language caches** (`cachejs`, `cachetemplates`, `langstringcache`) — should be on.
+
+#### Server health
+
+- **Swap usage** — read from `/proc/meminfo`; sustained swap use signals RAM pressure. Shown as used/total with a warning above 25%.
+- **Cron freshness** — how long ago scheduled tasks last ran (warns if stale), plus a count of tasks currently failing (`faildelay` set).
+
 #### Cache store performance
 
 Shows hit/miss counts and I/O bytes across the four MUC cache modes:

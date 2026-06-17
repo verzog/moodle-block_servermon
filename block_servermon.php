@@ -1856,6 +1856,10 @@ JSEOF;
             $html .= $this->render_cache_section($d['cachestats']);
         }
 
+        $html .= $this->render_opcache_section($d['opcache']);
+        $html .= $this->render_prod_section($d['prod']);
+        $html .= $this->render_health_section($d['health']);
+
         if ($d['observation'] !== '') {
             $html .= '<h6 class="bsm-debug-section-title">' . get_string('debug_obs', 'block_servermon') . '</h6>';
             $html .= '<div class="bsm-debug-alert bsm-alert-warn">'
@@ -1948,6 +1952,14 @@ JSEOF;
         // Surface a missing PHP extension whenever Redis is intended (active or configured).
         if (($sess['type'] === 'redis' || !empty($sess['redisconfigured'])) && empty($sess['redisext'])) {
             $html .= '<br>' . get_string('debug_session_redis_noext', 'block_servermon');
+        }
+
+        // Surface config-level Redis sharing/security findings.
+        if ($sess['redis'] !== null && !empty($sess['redis']['findings'])) {
+            $host = htmlspecialchars($sess['redis']['host']);
+            foreach ($sess['redis']['findings'] as $code) {
+                $html .= '<br>' . get_string('redis_finding_' . $code, 'block_servermon', $host);
+            }
         }
 
         $html .= '</div>';
@@ -2066,6 +2078,9 @@ JSEOF;
             'dbtime'      => null,
             'session'     => ['type' => 'file', 'size' => null],
             'cachestats'  => [],
+            'opcache'     => [],
+            'prod'        => [],
+            'health'      => [],
             'observation' => '',
         ];
 
@@ -2091,6 +2106,15 @@ JSEOF;
 
         // MUC cache stats.
         $result['cachestats'] = $this->get_cache_stats();
+
+        // PHP OPcache health.
+        $result['opcache'] = $this->get_opcache_info();
+
+        // Moodle production-readiness configuration flags.
+        $result['prod'] = $this->get_prod_readiness();
+
+        // Server health: swap usage and cron freshness.
+        $result['health'] = $this->get_health_info();
 
         // Advisory observation.
         $result['observation'] = $this->build_observation($result);
@@ -2142,17 +2166,60 @@ JSEOF;
         ];
 
         if ($type === 'redis' || $redisconfigured) {
-            $info['redis'] = [
+            $redis = [
                 'host' => $CFG->session_redis_host ?? '127.0.0.1',
                 'port' => $CFG->session_redis_port ?? 6379,
                 'db' => $CFG->session_redis_database ?? 0,
                 'prefix' => $CFG->session_redis_prefix ?? '',
                 'lock_timeout' => $CFG->session_redis_acquire_lock_timeout ?? 120,
                 'lock_expire' => $CFG->session_redis_lock_expire ?? 7200,
+                'auth' => !empty($CFG->session_redis_auth),
             ];
+            $redis['findings'] = $this->redis_config_findings($redis);
+            $info['redis'] = $redis;
         }
 
         return $info;
+    }
+
+    /**
+     * Identify configuration-level risks with the Redis session setup.
+     *
+     * Best-effort signals from config.php alone — no live connection. An empty
+     * key prefix means a Redis instance shared with another Moodle site would
+     * let the two collide with or evict each other's session keys; a
+     * non-loopback host implies a shared Redis server rather than a per-site
+     * instance; and no password on such a host is a security exposure.
+     *
+     * @param array $r Redis connection settings (host, prefix, auth, …).
+     * @return array List of finding codes: noprefix, remote, noauth.
+     */
+    private function redis_config_findings(array $r): array {
+        $findings = [];
+        if (trim((string) $r['prefix']) === '') {
+            $findings[] = 'noprefix';
+        }
+        if (!$this->redis_host_is_local((string) $r['host'])) {
+            $findings[] = 'remote';
+            if (empty($r['auth'])) {
+                $findings[] = 'noauth';
+            }
+        }
+        return $findings;
+    }
+
+    /**
+     * Whether a Redis host string refers to the local machine.
+     *
+     * @param string $host Configured Redis host, or a unix socket path.
+     * @return bool
+     */
+    private function redis_host_is_local(string $host): bool {
+        $host = strtolower(trim($host));
+        if ($host === '' || $host[0] === '/') {
+            return true; // Default/empty, or a unix socket path.
+        }
+        return in_array($host, ['127.0.0.1', '::1', 'localhost', 'ip6-localhost'], true);
     }
 
     /**
@@ -2327,6 +2394,400 @@ JSEOF;
      */
     private function get_store_type_label(string $store): string {
         return get_string('store_' . $this->get_store_type_key($store), 'block_servermon');
+    }
+
+    // OPcache health.
+
+    /**
+     * Read PHP OPcache status and key configuration directives.
+     *
+     * Degrades gracefully when the extension is missing or its API is
+     * restricted (opcache.restrict_api).
+     *
+     * @return array Keys: available, enabled, hitrate, memused, keysused,
+     *               keysmax, oomrestarts, cachedscripts, validate, jit.
+     */
+    private function get_opcache_info(): array {
+        $result = [
+            'available'     => false,
+            'enabled'       => false,
+            'hitrate'       => null,
+            'memused'       => null,
+            'keysused'      => null,
+            'keysmax'       => null,
+            'oomrestarts'   => null,
+            'cachedscripts' => null,
+            'validate'      => null,
+            'jit'           => null,
+        ];
+
+        if (!function_exists('opcache_get_status')) {
+            return $result;
+        }
+        $result['available'] = true;
+
+        $status = @opcache_get_status(false);
+        if (!is_array($status)) {
+            return $result; // API restricted or OPcache disabled.
+        }
+        $result['enabled'] = !empty($status['opcache_enabled']);
+
+        if (isset($status['opcache_statistics']) && is_array($status['opcache_statistics'])) {
+            $s = $status['opcache_statistics'];
+            $result['hitrate']       = isset($s['opcache_hit_rate']) ? round((float) $s['opcache_hit_rate'], 1) : null;
+            $result['oomrestarts']   = isset($s['oom_restarts']) ? (int) $s['oom_restarts'] : null;
+            $result['cachedscripts'] = isset($s['num_cached_scripts']) ? (int) $s['num_cached_scripts'] : null;
+            $result['keysused']      = isset($s['num_cached_keys']) ? (int) $s['num_cached_keys'] : null;
+            $result['keysmax']       = isset($s['max_cached_keys']) ? (int) $s['max_cached_keys'] : null;
+        }
+
+        if (isset($status['memory_usage']) && is_array($status['memory_usage'])) {
+            $mu     = $status['memory_usage'];
+            $used   = (float) ($mu['used_memory'] ?? 0);
+            $free   = (float) ($mu['free_memory'] ?? 0);
+            $wasted = (float) ($mu['wasted_memory'] ?? 0);
+            $total  = $used + $free + $wasted;
+            $result['memused'] = $total > 0 ? round(($used / $total) * 100, 1) : null;
+        }
+
+        $config = function_exists('opcache_get_configuration') ? @opcache_get_configuration() : false;
+        if (is_array($config) && isset($config['directives']) && is_array($config['directives'])) {
+            $d = $config['directives'];
+            $result['validate'] = !empty($d['opcache.validate_timestamps']);
+            $jit = $d['opcache.jit'] ?? null;
+            $result['jit'] = $this->opcache_jit_active($jit) ? (string) $jit : null;
+        }
+
+        return $result;
+    }
+
+    /**
+     * Whether an opcache.jit directive value represents an active JIT.
+     *
+     * @param mixed $jit Raw directive value (string, bool, or null).
+     * @return bool
+     */
+    private function opcache_jit_active($jit): bool {
+        if ($jit === null || $jit === false || $jit === '') {
+            return false;
+        }
+        $val = strtolower((string) $jit);
+        return !in_array($val, ['disable', 'off', '0'], true);
+    }
+
+    /**
+     * Render the OPcache health section.
+     *
+     * @param array $o OPcache info from get_opcache_info().
+     * @return string HTML output.
+     */
+    private function render_opcache_section(array $o): string {
+        $html = '<h6 class="bsm-debug-section-title">' . get_string('opcache_title', 'block_servermon') . '</h6>';
+
+        if (empty($o['available'])) {
+            return $html . '<div class="bsm-debug-alert bsm-alert-info">'
+                . get_string('opcache_unavailable', 'block_servermon') . '</div>';
+        }
+        if (empty($o['enabled'])) {
+            return $html . '<div class="bsm-debug-alert bsm-alert-warn">'
+                . get_string('opcache_disabled', 'block_servermon') . '</div>';
+        }
+
+        $unavail = get_string('unavailable', 'block_servermon');
+        $html .= '<div class="bsm-debug-grid">';
+        $html .= $this->metric_card(
+            get_string('opcache_hitrate', 'block_servermon'),
+            $o['hitrate'] !== null ? $o['hitrate'] . '%' : $unavail
+        );
+        $html .= $this->metric_card(
+            get_string('opcache_memory', 'block_servermon'),
+            $o['memused'] !== null ? $o['memused'] . '%' : $unavail
+        );
+        $html .= $this->metric_card(
+            get_string('opcache_scripts', 'block_servermon'),
+            $o['cachedscripts'] !== null ? (string) $o['cachedscripts'] : $unavail
+        );
+        $html .= $this->metric_card(
+            get_string('opcache_jit', 'block_servermon'),
+            $o['jit'] !== null
+                ? get_string('opcache_jit_on', 'block_servermon')
+                : get_string('opcache_jit_off', 'block_servermon')
+        );
+        $html .= '</div>';
+
+        foreach ($this->opcache_advisories($o) as $adv) {
+            $html .= '<div class="bsm-debug-alert ' . $adv['alert'] . '">'
+                . htmlspecialchars($adv['text']) . '</div>';
+        }
+
+        return $html;
+    }
+
+    /**
+     * Build advisory messages for the OPcache section.
+     *
+     * @param array $o OPcache info from get_opcache_info().
+     * @return array List of ['alert' => css class, 'text' => message].
+     */
+    private function opcache_advisories(array $o): array {
+        $out = [];
+
+        if (!empty($o['oomrestarts'])) {
+            $out[] = [
+                'alert' => 'bsm-alert-warn',
+                'text'  => get_string('opcache_oom', 'block_servermon', $o['oomrestarts']),
+            ];
+        }
+
+        $keysfull = !empty($o['keysmax']) && $o['keysused'] !== null
+            && ($o['keysused'] / $o['keysmax']) >= 0.9;
+        if ($keysfull) {
+            $out[] = [
+                'alert' => 'bsm-alert-warn',
+                'text'  => get_string('opcache_keysfull', 'block_servermon', (object) [
+                    'used' => $o['keysused'],
+                    'max'  => $o['keysmax'],
+                ]),
+            ];
+        }
+
+        if (!empty($o['validate'])) {
+            $out[] = [
+                'alert' => 'bsm-alert-info',
+                'text'  => get_string('opcache_validate', 'block_servermon'),
+            ];
+        }
+
+        return $out;
+    }
+
+    // Production-readiness configuration flags.
+
+    /**
+     * Evaluate Moodle configuration flags that matter for a production site.
+     *
+     * @return array List of ['key' => string, 'ok' => bool].
+     */
+    private function get_prod_readiness(): array {
+        global $CFG;
+
+        $checks = [];
+
+        // Theme designer mode disables CSS/JS caching — must be off in production.
+        $checks[] = ['key' => 'themedesigner', 'ok' => empty($CFG->themedesignermode)];
+
+        // Debug display leaks paths, SQL and stack traces to users — off in production.
+        $checks[] = ['key' => 'debugdisplay', 'ok' => empty($CFG->debugdisplay)];
+
+        // A developer-level debug setting is costly and verbose for a live site.
+        $debug    = isset($CFG->debug) ? (int) $CFG->debug : 0;
+        $devlevel = defined('DEBUG_ALL') ? DEBUG_ALL : 6143;
+        $checks[] = ['key' => 'debug', 'ok' => $debug < $devlevel];
+
+        // Asset and language caches should be enabled in production.
+        $checks[] = ['key' => 'cachejs', 'ok' => !empty($CFG->cachejs)];
+        $checks[] = ['key' => 'cachetemplates', 'ok' => !empty($CFG->cachetemplates)];
+        $checks[] = ['key' => 'langstringcache', 'ok' => !isset($CFG->langstringcache) || !empty($CFG->langstringcache)];
+
+        return $checks;
+    }
+
+    /**
+     * Render the production-readiness configuration section.
+     *
+     * @param array $checks Checks from get_prod_readiness().
+     * @return string HTML output.
+     */
+    private function render_prod_section(array $checks): string {
+        $html  = '<h6 class="bsm-debug-section-title">' . get_string('prod_title', 'block_servermon') . '</h6>';
+        $html .= '<div class="bsm-iso-intro">' . get_string('prod_intro', 'block_servermon') . '</div>';
+        $html .= '<table class="bsm-info-table">';
+
+        foreach ($checks as $c) {
+            $badge = $c['ok']
+                ? '<span class="bsm-badge bsm-ok">' . get_string('prod_ok', 'block_servermon') . '</span>'
+                : '<span class="bsm-badge bsm-high">' . get_string('prod_review', 'block_servermon') . '</span>';
+            $label = get_string('prod_' . $c['key'], 'block_servermon');
+            $note  = $c['ok']
+                ? ''
+                : '<br><span class="bsm-hosting-reasons">'
+                    . get_string('prod_' . $c['key'] . '_warn', 'block_servermon') . '</span>';
+            $html .= '<tr>'
+                . '<td class="bsm-info-key">' . $label . $note . '</td>'
+                . '<td class="bsm-info-val">' . $badge . '</td>'
+                . '</tr>';
+        }
+
+        $html .= '</table>';
+        return $html;
+    }
+
+    // Server health: swap and cron freshness.
+
+    /**
+     * Collect server-health signals: swap usage and cron freshness.
+     *
+     * @return array Keys: swap, cron.
+     */
+    private function get_health_info(): array {
+        return [
+            'swap' => $this->get_swap(),
+            'cron' => $this->get_cron_health(),
+        ];
+    }
+
+    /**
+     * Read swap usage from /proc/meminfo.
+     *
+     * @return array Keys: total, used, pct (GB / percent). A total of 0.0
+     *               means swap is disabled; nulls mean it is unavailable.
+     */
+    private function get_swap(): array {
+        $result = ['total' => null, 'used' => null, 'pct' => null];
+
+        if (!is_readable('/proc/meminfo')) {
+            return $result;
+        }
+
+        $meminfo = file_get_contents('/proc/meminfo');
+        preg_match('/SwapTotal:\s+(\d+)/i', $meminfo, $mt);
+        preg_match('/SwapFree:\s+(\d+)/i', $meminfo, $mf);
+        if (!$mt || !$mf) {
+            return $result;
+        }
+
+        $totalkb = (int) $mt[1];
+        if ($totalkb <= 0) {
+            $result['total'] = 0.0; // Swap is disabled.
+            return $result;
+        }
+
+        $usedkb          = $totalkb - (int) $mf[1];
+        $result['total'] = round($totalkb / 1048576, 2);
+        $result['used']  = round($usedkb / 1048576, 2);
+        $result['pct']   = round(($usedkb / $totalkb) * 100, 1);
+        return $result;
+    }
+
+    /**
+     * Read cron freshness: when scheduled tasks last ran and how many are failing.
+     *
+     * @return array Keys: checked (bool, query succeeded), age (seconds since
+     *               last run, or null when cron has never run), failing (int|null).
+     */
+    private function get_cron_health(): array {
+        global $DB;
+
+        $result = ['checked' => false, 'age' => null, 'failing' => null];
+
+        if (!$DB->get_manager()->table_exists('task_scheduled')) {
+            return $result;
+        }
+
+        try {
+            $lastrun = $DB->get_field_sql('SELECT MAX(lastruntime) FROM {task_scheduled}');
+            $failing = $DB->count_records_select('task_scheduled', 'faildelay > 0');
+            if ($DB->get_manager()->table_exists('task_adhoc')) {
+                $failing += $DB->count_records_select('task_adhoc', 'faildelay > 0');
+            }
+        } catch (\Throwable $e) {
+            return $result;
+        }
+
+        $result['checked'] = true;
+        $result['failing'] = (int) $failing;
+        // A falsy MAX (0/null) means no scheduled task has ever run — leave age
+        // null so render_cron_health() can report the never-run state explicitly.
+        if ($lastrun) {
+            $result['age'] = max(0, time() - (int) $lastrun);
+        }
+        return $result;
+    }
+
+    /**
+     * Render the server-health section (swap usage and cron freshness).
+     *
+     * @param array $h Health info from get_health_info().
+     * @return string HTML output.
+     */
+    private function render_health_section(array $h): string {
+        return $this->render_swap_health($h['swap']) . $this->render_cron_health($h['cron']);
+    }
+
+    /**
+     * Render the swap-usage health block.
+     *
+     * @param array $swap Swap info from get_swap().
+     * @return string HTML output.
+     */
+    private function render_swap_health(array $swap): string {
+        if ($swap['pct'] === null && $swap['total'] !== 0.0) {
+            return ''; // Swap info unavailable (e.g. non-Linux).
+        }
+
+        $html = '<h6 class="bsm-debug-section-title">' . get_string('health_swap_title', 'block_servermon') . '</h6>';
+
+        if ($swap['pct'] === null) {
+            return $html . '<div class="bsm-debug-alert bsm-alert-info">'
+                . get_string('health_swap_none', 'block_servermon') . '</div>';
+        }
+
+        $alert  = $swap['pct'] >= 25 ? 'bsm-alert-warn' : 'bsm-alert-info';
+        $detail = get_string('health_swap_detail', 'block_servermon', (object) [
+            'used'  => $swap['used'],
+            'total' => $swap['total'],
+            'pct'   => $swap['pct'],
+        ]);
+        return $html . '<div class="bsm-debug-alert ' . $alert . '">' . htmlspecialchars($detail) . '</div>';
+    }
+
+    /**
+     * Render the cron-freshness health block.
+     *
+     * @param array $cron Cron info from get_cron_health().
+     * @return string HTML output.
+     */
+    private function render_cron_health(array $cron): string {
+        if (empty($cron['checked'])) {
+            return ''; // Task tables unavailable — cannot assess cron.
+        }
+
+        $html = '<h6 class="bsm-debug-section-title">' . get_string('health_cron_title', 'block_servermon') . '</h6>';
+
+        if ($cron['age'] === null) {
+            // No scheduled task has ever run: cron is almost certainly not set up.
+            $alert  = 'bsm-alert-warn';
+            $detail = get_string('health_cron_never', 'block_servermon');
+        } else {
+            $stale  = $cron['age'] > 1800; // Healthy cron runs at least every few minutes.
+            $alert  = ($stale || !empty($cron['failing'])) ? 'bsm-alert-warn' : 'bsm-alert-info';
+            $detail = get_string('health_cron_detail', 'block_servermon', $this->format_duration($cron['age']));
+        }
+
+        if (!empty($cron['failing'])) {
+            $detail .= ' ' . get_string('health_cron_failing', 'block_servermon', $cron['failing']);
+        }
+
+        return $html . '<div class="bsm-debug-alert ' . $alert . '">' . htmlspecialchars($detail) . '</div>';
+    }
+
+    /**
+     * Format a duration in seconds as a compact human-readable string.
+     *
+     * @param int $secs Duration in seconds.
+     * @return string e.g. "45s", "12m", "3h 20m", "2d 4h".
+     */
+    private function format_duration(int $secs): string {
+        if ($secs < 60) {
+            return $secs . 's';
+        }
+        if ($secs < 3600) {
+            return (int) floor($secs / 60) . 'm';
+        }
+        if ($secs < 86400) {
+            return (int) floor($secs / 3600) . 'h ' . (int) floor(($secs % 3600) / 60) . 'm';
+        }
+        return (int) floor($secs / 86400) . 'd ' . (int) floor(($secs % 86400) / 3600) . 'h';
     }
 
     /**

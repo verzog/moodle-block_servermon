@@ -28,8 +28,15 @@ with the process responsible.</p>
   <li>Page load time, peak memory usage, DB read/write counts, total DB query time</li>
   <li>Session handler type (file / Redis / Memcached / database), session size, and full Redis
       connection details when Redis sessions are active</li>
+  <li>Best-effort Redis sharing/security findings from config.php — missing key prefix (shared-instance
+      collision risk), non-local host, and no password on an off-box host</li>
   <li>MUC cache store performance — hits, misses, and I/O bytes broken down by static,
       application, session, and request caches</li>
+  <li>PHP OPcache health — hit rate, memory used, cached scripts, JIT status, plus advisories for
+      out-of-memory restarts, full key slots, and timestamp validation</li>
+  <li>Production-readiness checks — theme designer mode, debug display/level, and JS/template/language
+      caching flagged OK or Review</li>
+  <li>Server health — swap usage (from <code>/proc/meminfo</code>) and cron freshness with a failing-task count</li>
   <li>Advisory note if the application cache miss rate is high</li>
 </ul>
 
