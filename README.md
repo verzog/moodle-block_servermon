@@ -49,7 +49,7 @@ Three colour-coded progress bars are shown at the top of the block:
 
 ### Top Processes by CPU
 
-Collapsed by default. Click **Top processes by CPU ▾** to expand.
+Collapsed by default. Click the **Top processes by CPU** toggle bar to expand.
 
 Once open, the panel polls the server every **5 seconds** via a lightweight AJAX request and renders a live table:
 
@@ -71,7 +71,7 @@ The poll stops automatically when you collapse the panel to avoid unnecessary ba
 
 ### Server Info Panel
 
-Collapsed by default. Click **Server Info ▾** to expand. Contains:
+Collapsed by default. Click the **Server Info** toggle bar to expand. Contains:
 
 | Field | Description |
 |---|---|
@@ -87,7 +87,7 @@ Collapsed by default. Click **Server Info ▾** to expand. Contains:
 
 ### OS Users & PHP-FPM Pools — Shared-Server Isolation
 
-Collapsed by default. Click **OS users & PHP-FPM pools — shared-server isolation ▾** to expand.
+Collapsed by default. Click the **OS users & PHP-FPM pools — shared-server isolation** toggle bar to expand.
 
 This section helps you confirm that a multi-tenant (shared) server isolates each hosted site correctly: ideally every site runs under its own operating-system user **and** its own PHP-FPM pool — fenced by `open_basedir`/`chroot`, listening on its own private socket — so one site cannot read another's files, connect to its pool, or enumerate its processes.
 
@@ -150,7 +150,7 @@ The headline answers *"is **this** Moodle isolated?"* When the request runs on a
 
 ### Moodle Debug Footer — Key Metrics
 
-Collapsed by default. Click **Moodle debug footer — key metrics ▾** to expand. Shows Moodle page-performance data for the current request:
+Collapsed by default. Click the **Moodle debug footer — key metrics** toggle bar to expand. Shows Moodle page-performance data for the current request:
 
 #### Summary cards
 
