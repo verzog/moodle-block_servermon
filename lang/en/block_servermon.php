@@ -52,6 +52,7 @@ $string['disk_detail'] = '{$a->used} GB used of {$a->total} GB ({$a->free} GB fr
 $string['disk_label'] = 'Disk Space';
 $string['health_cron_detail'] = 'Scheduled tasks last ran {$a} ago.';
 $string['health_cron_failing'] = '{$a} task(s) are currently failing (faildelay set) — check Site administration ▸ Server ▸ Tasks ▸ Tasks running now.';
+$string['health_cron_never'] = 'No scheduled task has ever run — cron does not appear to be configured. Set up the system cron to call admin/cli/cron.php, or Moodle background tasks will never execute.';
 $string['health_cron_title'] = 'Cron freshness';
 $string['health_swap_detail'] = 'Swap: {$a->used} GB used of {$a->total} GB ({$a->pct}%). Sustained swap use usually means RAM pressure.';
 $string['health_swap_none'] = 'Swap is disabled (SwapTotal 0).';

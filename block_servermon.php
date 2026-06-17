@@ -2539,8 +2539,9 @@ JSEOF;
             ];
         }
 
-        if (!empty($o['keysmax']) && $o['keysused'] !== null
-                && ($o['keysused'] / $o['keysmax']) >= 0.9) {
+        $keysfull = !empty($o['keysmax']) && $o['keysused'] !== null
+            && ($o['keysused'] / $o['keysmax']) >= 0.9;
+        if ($keysfull) {
             $out[] = [
                 'alert' => 'bsm-alert-warn',
                 'text'  => get_string('opcache_keysfull', 'block_servermon', (object) [
@@ -2671,12 +2672,13 @@ JSEOF;
     /**
      * Read cron freshness: when scheduled tasks last ran and how many are failing.
      *
-     * @return array Keys: age (seconds since last run, or null), failing (int|null).
+     * @return array Keys: checked (bool, query succeeded), age (seconds since
+     *               last run, or null when cron has never run), failing (int|null).
      */
     private function get_cron_health(): array {
         global $DB;
 
-        $result = ['age' => null, 'failing' => null];
+        $result = ['checked' => false, 'age' => null, 'failing' => null];
 
         if (!$DB->get_manager()->table_exists('task_scheduled')) {
             return $result;
@@ -2692,10 +2694,13 @@ JSEOF;
             return $result;
         }
 
+        $result['checked'] = true;
+        $result['failing'] = (int) $failing;
+        // A falsy MAX (0/null) means no scheduled task has ever run — leave age
+        // null so render_cron_health() can report the never-run state explicitly.
         if ($lastrun) {
             $result['age'] = max(0, time() - (int) $lastrun);
         }
-        $result['failing'] = (int) $failing;
         return $result;
     }
 
@@ -2743,15 +2748,22 @@ JSEOF;
      * @return string HTML output.
      */
     private function render_cron_health(array $cron): string {
-        if ($cron['age'] === null) {
-            return '';
+        if (empty($cron['checked'])) {
+            return ''; // Task tables unavailable — cannot assess cron.
         }
 
-        $html  = '<h6 class="bsm-debug-section-title">' . get_string('health_cron_title', 'block_servermon') . '</h6>';
-        $stale = $cron['age'] > 1800; // Healthy cron runs at least every few minutes.
-        $alert = ($stale || !empty($cron['failing'])) ? 'bsm-alert-warn' : 'bsm-alert-info';
+        $html = '<h6 class="bsm-debug-section-title">' . get_string('health_cron_title', 'block_servermon') . '</h6>';
 
-        $detail = get_string('health_cron_detail', 'block_servermon', $this->format_duration($cron['age']));
+        if ($cron['age'] === null) {
+            // No scheduled task has ever run: cron is almost certainly not set up.
+            $alert  = 'bsm-alert-warn';
+            $detail = get_string('health_cron_never', 'block_servermon');
+        } else {
+            $stale  = $cron['age'] > 1800; // Healthy cron runs at least every few minutes.
+            $alert  = ($stale || !empty($cron['failing'])) ? 'bsm-alert-warn' : 'bsm-alert-info';
+            $detail = get_string('health_cron_detail', 'block_servermon', $this->format_duration($cron['age']));
+        }
+
         if (!empty($cron['failing'])) {
             $detail .= ' ' . get_string('health_cron_failing', 'block_servermon', $cron['failing']);
         }
