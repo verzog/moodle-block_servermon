@@ -1614,7 +1614,7 @@ JSEOF;
         $body .= $this->render_isolation_verdict($iso['verdict']);
 
         return '<details class="bsm-details">'
-            . '<summary class="bsm-summary bsm-summary-debug">' . $label . '</summary>'
+            . '<summary class="bsm-summary">' . $label . '</summary>'
             . '<div class="bsm-iso-body">' . $body . '</div>'
             . '</details>';
     }
@@ -1868,7 +1868,7 @@ JSEOF;
         }
 
         return '<details class="bsm-details">'
-            . '<summary class="bsm-summary bsm-summary-debug">' . $label . '</summary>'
+            . '<summary class="bsm-summary">' . $label . '</summary>'
             . '<div class="bsm-debug-body">' . $html . '</div>'
             . '</details>';
     }
