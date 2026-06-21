@@ -127,7 +127,7 @@ If no pool files are found, the server likely uses mod_php or a single pool. If 
 
 #### Process visibility (`/proc` hidepid)
 
-Checks whether this PHP process can read the `/proc/[pid]/stat` of processes owned by **other** (non-root) users. If it can, `/proc` is not mounted with `hidepid`, meaning any tenant can enumerate every other tenant's processes and read their command-line arguments (which routinely contain DB passwords, API tokens, etc.). The section reports either "only its own processes" (hardened) or the count and names of the other users whose processes are visible. This is the signal behind, for example, a YunoHost Moodle seeing Uptime Kuma's processes.
+Checks whether this PHP process can read the `/proc/[pid]/stat` of processes owned by **other** (non-root) users. If it can, `/proc` is not mounted with `hidepid`, meaning any tenant can enumerate every other tenant's processes and read their command-line arguments (which routinely contain DB passwords, API tokens, etc.). The section reports one of three states: the count and names of the other users whose processes are visible (a leak); "only its own processes" when foreign processes were running but hidden (hardened); or an inconclusive note when no other-user processes were running during the check, so `hidepid` can't be confirmed either way. The check is skipped entirely when the POSIX extension isn't available to provide a true effective UID. This is the signal behind, for example, a YunoHost Moodle seeing Uptime Kuma's processes.
 
 #### Isolation assessment
 
@@ -169,7 +169,7 @@ Shows the active session backend type (file, Redis, Memcached, or database), the
 - Key prefix
 - Lock timeout and lock expiry settings
 
-The handler is detected from `$CFG->session_handler_class`, which is the *only* setting Moodle uses to choose the session backend. Configuring Redis as a MUC cache store does **not** move sessions onto Redis.
+The handler is read from `$CFG->session_handler_class`. When that is not set, the panel resolves the effective backend the same way Moodle core does: it falls back to **database** sessions if `$CFG->dbsessions` is enabled (and the database driver supports session locking), otherwise to **file** sessions. Configuring Redis as a MUC cache store does **not** move sessions onto Redis.
 
 The panel also flags common misconfigurations:
 

@@ -903,8 +903,15 @@ class block_servermon extends block_base {
             }
         }
 
+        // Whether an OS account can be resolved at all on this host. If neither
+        // /etc/passwd was readable nor posix_getpwnam() is available, a failed
+        // lookup means resolution was impossible — an incomplete audit — rather
+        // than the user genuinely missing, so pool_issues() must not treat it as
+        // a hard failure.
+        $canresolve = !empty($users['readable']) || function_exists('posix_getpwnam');
+
         foreach ($pools as $i => $pool) {
-            $pool['issues'] = $this->pool_issues($pool, $infos[$i] ?? null, $usercounts, $homecounts);
+            $pool['issues'] = $this->pool_issues($pool, $infos[$i] ?? null, $usercounts, $homecounts, $canresolve);
             $pool['ok']     = empty($pool['issues']);
             $pools[$i]      = $pool;
         }
@@ -919,9 +926,11 @@ class block_servermon extends block_base {
      * @param array|null $userinfo Resolved OS user (uid, home) or null.
      * @param array $usercounts Map of pool user => number of pools using it.
      * @param array $homecounts Map of home dir => number of pool users sharing it.
+     * @param bool $canresolve Whether OS account resolution is available at all.
      * @return array List of issue codes (see issue_severity()).
      */
-    private function pool_issues(array $pool, ?array $userinfo, array $usercounts, array $homecounts): array {
+    private function pool_issues(array $pool, ?array $userinfo, array $usercounts, array $homecounts,
+            bool $canresolve = true): array {
         $issues = [];
         $user   = $pool['user'];
 
@@ -934,7 +943,10 @@ class block_servermon extends block_base {
         } else if ($this->is_generic_user($user)) {
             $issues[] = 'generic';
         } else if ($userinfo === null) {
-            $issues[] = 'nouser';
+            // A genuinely missing account is a hard isolation failure, but if the
+            // account simply could not be resolved (no passwd, no posix), the audit
+            // is incomplete for this pool — flag it as undetermined, not 'nouser'.
+            $issues[] = $canresolve ? 'nouser' : 'unresolved';
         } else {
             if ($userinfo['uid'] < 1000) {
                 $issues[] = 'systemuser';
@@ -968,7 +980,7 @@ class block_servermon extends block_base {
         if (in_array($code, $hard, true)) {
             return 'hard';
         }
-        if ($code === 'undetermined') {
+        if ($code === 'undetermined' || $code === 'unresolved') {
             return 'undetermined';
         }
         return 'soft';
@@ -1014,7 +1026,7 @@ class block_servermon extends block_base {
      * @return array Keys: checked (bool), count (int), foreign (array of names).
      */
     private function get_proc_visibility(bool $islinux): array {
-        $result = ['checked' => false, 'count' => 0, 'foreign' => []];
+        $result = ['checked' => false, 'count' => 0, 'foreign' => [], 'foreignseen' => 0];
 
         if (!$islinux) {
             return $result;
@@ -1031,20 +1043,26 @@ class block_servermon extends block_base {
         }
         $result['checked'] = true;
 
-        $foreign = [];
+        $foreign     = [];
+        $foreignseen = 0;
         foreach ($dirs as $dir) {
             $owner = @fileowner($dir);
             if ($owner === false || $owner === $myuid || $owner === 0) {
                 continue;
             }
+            // A process owned by another non-root user was visible at all. Track
+            // this separately from readability so we can tell "no foreign process
+            // was running" apart from "foreign processes exist but are hidden".
+            $foreignseen++;
             // Only count it as a leak if the process detail is actually readable.
             if (@is_readable($dir . '/stat')) {
                 $foreign[$this->uid_name($owner)] = true;
             }
         }
 
-        $result['foreign'] = array_keys($foreign);
-        $result['count']   = count($foreign);
+        $result['foreign']     = array_keys($foreign);
+        $result['count']       = count($foreign);
+        $result['foreignseen'] = $foreignseen;
         return $result;
     }
 
@@ -1057,10 +1075,12 @@ class block_servermon extends block_base {
         if (function_exists('posix_geteuid')) {
             return posix_geteuid();
         }
-        if (function_exists('getmyuid')) {
-            $uid = getmyuid();
-            return $uid !== false ? $uid : -1;
-        }
+        // Deliberately no getmyuid() fallback: getmyuid() returns the owner of the
+        // PHP *script file*, not the effective UID of the running PHP worker. When
+        // files are owned by root/a deploy user while PHP runs as www-data, that UID
+        // would be compared against /proc owners and mislabel the worker's own
+        // processes as foreign (or hide real foreign ones). Without a true effective
+        // UID, return -1 so the /proc visibility check is skipped rather than wrong.
         return -1;
     }
 
@@ -1145,18 +1165,28 @@ class block_servermon extends block_base {
         $soft = false;
         $undetermined = false;
         $hardhitscurrent = false;
+        $currentpoolclean = false;
         foreach ($pools as $pool) {
             $iscurrentpool = $current !== '' && $pool['user'] === $current;
+            $poolhard  = false;
+            $poolundet = false;
             foreach ($pool['issues'] as $code) {
                 $sev = $this->issue_severity($code);
                 if ($sev === 'hard') {
                     $hard = true;
+                    $poolhard = true;
                     $hardhitscurrent = $hardhitscurrent || $iscurrentpool;
                 } else if ($sev === 'soft') {
                     $soft = true;
                 } else {
                     $undetermined = true;
+                    $poolundet = true;
                 }
+            }
+            // Positively confirm THIS request's pool was parsed and is clean (no
+            // hard or undetermined issues), so a site-centric verdict can be trusted.
+            if ($iscurrentpool && !$poolhard && !$poolundet) {
+                $currentpoolclean = true;
             }
         }
 
@@ -1164,7 +1194,14 @@ class block_servermon extends block_base {
             // Option A: a dedicated current user whose own pool is clean stays
             // isolated even when other pools are misconfigured.
             if ($currentdedicated && !$hardhitscurrent) {
-                return $this->verdict('partial', 'iso_verdict_otherweak', null, $caveat);
+                // ...but only when this request's pool was actually parsed. If some
+                // pool configs are undetermined (e.g. user set in an include) and the
+                // current pool was not positively matched as clean, we cannot claim a
+                // dedicated pool — report Incomplete rather than a false Partial.
+                if (!$undetermined || $currentpoolclean) {
+                    return $this->verdict('partial', 'iso_verdict_otherweak', null, $caveat);
+                }
+                return $this->verdict('incomplete', 'iso_verdict_incomplete');
             }
             return $this->verdict('weak', 'iso_verdict_weak', null, $caveat);
         }
@@ -1810,8 +1847,12 @@ JSEOF;
         $html = '<h6 class="bsm-debug-section-title">' . get_string('iso_proc_title', 'block_servermon') . '</h6>';
 
         if ($pv['count'] === 0) {
+            // No readable foreign processes. Only claim hidepid is active when we
+            // actually saw foreign-owned processes that were hidden; if none were
+            // running, the check is inconclusive rather than a hardened signal.
+            $key = !empty($pv['foreignseen']) ? 'iso_proc_ok' : 'iso_proc_nosample';
             return $html . '<div class="bsm-debug-alert bsm-alert-info">'
-                . get_string('iso_proc_ok', 'block_servermon') . '</div>';
+                . get_string($key, 'block_servermon') . '</div>';
         }
 
         $shown = array_slice($pv['foreign'], 0, 8);
@@ -1923,9 +1964,11 @@ JSEOF;
         $html .= '<div class="bsm-debug-alert ' . $sessalert . '">' . $sessdetail;
 
         // Always show the configured handler class so the active backend is verifiable.
+        // When unset, $sess['type'] already holds the effective default that core would
+        // resolve to (file or database, per $CFG->dbsessions), so report that.
         $handler = $sess['handlerclass'] !== ''
             ? $sess['handlerclass']
-            : get_string('debug_session_handler_unset', 'block_servermon');
+            : get_string('debug_session_handler_unset', 'block_servermon', $sess['type']);
         $html .= '<br>' . get_string('debug_session_handler', 'block_servermon', htmlspecialchars($handler));
 
         if ($sess['type'] === 'redis' && $sess['redis'] !== null) {
@@ -2128,20 +2171,33 @@ JSEOF;
      * @return array Keys: type, size, redis.
      */
     private function get_session_info(): array {
-        global $CFG;
+        global $CFG, $DB;
 
         $handlerclass = isset($CFG->session_handler_class) ? (string)$CFG->session_handler_class : '';
 
-        $type = 'file';
-        if ($handlerclass !== '') {
-            $cls = strtolower($handlerclass);
-            if (strpos($cls, 'redis') !== false) {
-                $type = 'redis';
-            } else if (strpos($cls, 'memcached') !== false) {
-                $type = 'memcached';
-            } else if (strpos($cls, 'database') !== false || strpos($cls, '_db') !== false) {
-                $type = 'database';
+        // Resolve the effective handler the way core's \core\session\manager::factory()
+        // does: when session_handler_class is not set, Moodle does NOT always fall back
+        // to file sessions — it uses the database handler when $CFG->dbsessions is enabled
+        // and the DB driver supports session locking, otherwise file. Resolving this here
+        // avoids mislabelling a database-session site as file-based and raising a spurious
+        // Redis-inactive / file-session warning.
+        $resolvedclass = $handlerclass;
+        if ($resolvedclass === '') {
+            if (!empty($CFG->dbsessions) && isset($DB) && $DB->session_lock_supported()) {
+                $resolvedclass = '\core\session\database';
+            } else {
+                $resolvedclass = '\core\session\file';
             }
+        }
+
+        $type = 'file';
+        $cls  = strtolower($resolvedclass);
+        if (strpos($cls, 'redis') !== false) {
+            $type = 'redis';
+        } else if (strpos($cls, 'memcached') !== false) {
+            $type = 'memcached';
+        } else if (strpos($cls, 'database') !== false || strpos($cls, '_db') !== false) {
+            $type = 'database';
         }
 
         $size = null;
