@@ -929,8 +929,13 @@ class block_servermon extends block_base {
      * @param bool $canresolve Whether OS account resolution is available at all.
      * @return array List of issue codes (see issue_severity()).
      */
-    private function pool_issues(array $pool, ?array $userinfo, array $usercounts, array $homecounts,
-            bool $canresolve = true): array {
+    private function pool_issues(
+        array $pool,
+        ?array $userinfo,
+        array $usercounts,
+        array $homecounts,
+        bool $canresolve = true
+    ): array {
         $issues = [];
         $user   = $pool['user'];
 
@@ -1023,10 +1028,11 @@ class block_servermon extends block_base {
      * often carry secrets — are exposed across tenants.
      *
      * @param bool $islinux Whether the server is running Linux.
-     * @return array Keys: checked (bool), count (int), foreign (array of names).
+     * @return array Keys: checked (bool), count (int), foreign (array of names),
+     *               foreignseen (int), hidepid (int|null mount level).
      */
     private function get_proc_visibility(bool $islinux): array {
-        $result = ['checked' => false, 'count' => 0, 'foreign' => [], 'foreignseen' => 0];
+        $result = ['checked' => false, 'count' => 0, 'foreign' => [], 'foreignseen' => 0, 'hidepid' => null];
 
         if (!$islinux) {
             return $result;
@@ -1042,6 +1048,10 @@ class block_servermon extends block_base {
             return $result;
         }
         $result['checked'] = true;
+        // Authoritative hardening signal: with hidepid=2 other users' /proc/[pid]
+        // dirs are not even listed, so process sampling alone cannot distinguish a
+        // hardened mount from an idle one. Read the mount options to settle it.
+        $result['hidepid'] = $this->detect_proc_hidepid();
 
         $foreign     = [];
         $foreignseen = 0;
@@ -1064,6 +1074,54 @@ class block_servermon extends block_base {
         $result['count']       = count($foreign);
         $result['foreignseen'] = $foreignseen;
         return $result;
+    }
+
+    /**
+     * Read the kernel hidepid level for the /proc mount, if discoverable.
+     *
+     * @return int|null 0/1/2 hidepid level, or null if it could not be determined.
+     */
+    private function detect_proc_hidepid(): ?int {
+        $mounts = @file('/proc/self/mounts', FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+        if ($mounts === false) {
+            return null;
+        }
+        return $this->parse_hidepid_from_mounts($mounts);
+    }
+
+    /**
+     * Parse the hidepid level for the /proc mount from /proc/self/mounts lines.
+     *
+     * Handles both the numeric (hidepid=2) and symbolic (hidepid=invisible,
+     * hidepid=noaccess, hidepid=ptraceable) forms used across kernel versions.
+     *
+     * @param array $lines Lines from /proc/self/mounts.
+     * @return int|null hidepid level (0/1/2), or null if no /proc mount was found.
+     */
+    private function parse_hidepid_from_mounts(array $lines): ?int {
+        foreach ($lines as $line) {
+            $f = explode(' ', $line);
+            // Fields: device mountpoint fstype options dump pass.
+            if (count($f) < 4 || $f[1] !== '/proc' || $f[2] !== 'proc') {
+                continue;
+            }
+            $level = 0; // A /proc mount with no hidepid option means hidepid=0.
+            foreach (explode(',', $f[3]) as $opt) {
+                if (strpos($opt, 'hidepid=') !== 0) {
+                    continue;
+                }
+                $val = substr($opt, 8);
+                if ($val === '2' || $val === 'invisible' || $val === 'ptraceable') {
+                    $level = 2;
+                } else if ($val === '1' || $val === 'noaccess') {
+                    $level = 1;
+                } else {
+                    $level = 0; // '0' or 'off'.
+                }
+            }
+            return $level;
+        }
+        return null; // No /proc mount line found.
     }
 
     /**
@@ -1847,10 +1905,13 @@ JSEOF;
         $html = '<h6 class="bsm-debug-section-title">' . get_string('iso_proc_title', 'block_servermon') . '</h6>';
 
         if ($pv['count'] === 0) {
-            // No readable foreign processes. Only claim hidepid is active when we
-            // actually saw foreign-owned processes that were hidden; if none were
-            // running, the check is inconclusive rather than a hardened signal.
-            $key = !empty($pv['foreignseen']) ? 'iso_proc_ok' : 'iso_proc_nosample';
+            // No readable foreign processes. Treat /proc as hardened when it is
+            // mounted with hidepid (hidepid=2 hides foreign /proc/[pid] dirs from the
+            // listing entirely, so sampling alone would miss them) or when we saw
+            // foreign processes that were hidden. Otherwise nothing was sampled, so
+            // the result is inconclusive rather than a hardened signal.
+            $hardened = (isset($pv['hidepid']) && $pv['hidepid'] >= 1) || !empty($pv['foreignseen']);
+            $key = $hardened ? 'iso_proc_ok' : 'iso_proc_nosample';
             return $html . '<div class="bsm-debug-alert bsm-alert-info">'
                 . get_string($key, 'block_servermon') . '</div>';
         }

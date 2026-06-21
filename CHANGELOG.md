@@ -20,7 +20,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   comparing against the wrong identity.
 - **Process-visibility** distinguishes "no other-user processes were running" from
   "foreign processes exist but are hidden", so a host with nothing to sample no
-  longer receives a false `hidepid`-hardened signal.
+  longer receives a false `hidepid`-hardened signal. The `hidepid` level is read
+  from the `/proc` mount options so a hardened `hidepid=2` mount (which hides
+  foreign `/proc/[pid]` dirs from the listing) is still recognised as hardened.
 - **PHP-FPM pool audit** treats an *unresolvable* OS account (no readable
   `/etc/passwd` and no `posix_getpwnam()`) as an undetermined/incomplete result
   instead of a hard "user not found" failure that downgraded the verdict to Weak.
