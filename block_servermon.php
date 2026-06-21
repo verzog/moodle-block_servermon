@@ -1116,7 +1116,7 @@ class block_servermon extends block_base {
                 } else if ($val === '1' || $val === 'noaccess') {
                     $level = 1;
                 } else {
-                    $level = 0; // '0' or 'off'.
+                    $level = 0; // Anything else is treated as off.
                 }
             }
             return $level;
