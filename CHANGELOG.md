@@ -5,6 +5,32 @@ All notable changes to block_servermon are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.1] - 2026-06-21
+
+### Fixed
+- **Session handler diagnostic** now resolves the *effective* handler the way
+  core's `\core\session\manager` does: when `$CFG->session_handler_class` is
+  unset, the panel reports **database** sessions if `$CFG->dbsessions` is enabled
+  (and the DB supports session locking), otherwise file. This stops a
+  database-session site being mislabelled "defaults to file" and falsely raising
+  the Redis-inactive / file-session warning.
+- **Process-visibility (`/proc` hidepid)** no longer trusts `getmyuid()` (which
+  returns the script *file* owner, not the worker's effective UID) — the check is
+  skipped when the POSIX extension can't supply a true effective UID, rather than
+  comparing against the wrong identity.
+- **Process-visibility** distinguishes "no other-user processes were running" from
+  "foreign processes exist but are hidden", so a host with nothing to sample no
+  longer receives a false `hidepid`-hardened signal. The `hidepid` level is read
+  from the `/proc` mount options so a hardened `hidepid=2` mount (which hides
+  foreign `/proc/[pid]` dirs from the listing) is still recognised as hardened.
+- **PHP-FPM pool audit** treats an *unresolvable* OS account (no readable
+  `/etc/passwd` and no `posix_getpwnam()`) as an undetermined/incomplete result
+  instead of a hard "user not found" failure that downgraded the verdict to Weak.
+- **Isolation verdict** no longer returns the site-centric *Partial* ("on its own
+  dedicated pool") result when another pool's config is undetermined (e.g. user set
+  in an `include`) and the current request's pool was not positively matched as
+  clean — such hosts now report *Incomplete*.
+
 ## [1.9.0] - 2026-06-18
 
 ### Added
