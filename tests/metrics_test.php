@@ -24,6 +24,8 @@
 
 namespace block_servermon;
 
+use PHPUnit\Framework\Attributes\CoversClass;
+
 /**
  * Tests for the pure helper logic in the block_servermon class.
  *
@@ -35,8 +37,8 @@ namespace block_servermon;
  * @copyright 2026 Vernon Spain
  * @license   http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
+#[CoversClass(\block_servermon::class)]
 final class metrics_test extends \advanced_testcase {
-
     /** @var \block_servermon Block instance used for reflection-based calls. */
     protected $block;
 

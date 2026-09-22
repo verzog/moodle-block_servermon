@@ -24,6 +24,8 @@
 
 namespace block_servermon\task;
 
+use PHPUnit\Framework\Attributes\CoversClass;
+
 /**
  * Tests that the scheduled task logs a snapshot and prunes stale rows.
  *
@@ -31,8 +33,8 @@ namespace block_servermon\task;
  * @copyright 2026 Vernon Spain
  * @license   http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
+#[CoversClass(collect_metrics::class)]
 final class collect_metrics_test extends \advanced_testcase {
-
     /**
      * The task name resolves to a translated, non-empty string.
      *
