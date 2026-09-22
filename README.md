@@ -364,4 +364,4 @@ Minimally. The CPU gauge is read from the most recent scheduled-task snapshot, s
 ## License
 
 GNU General Public License v3 or later
-https://www.gnu.org/copyleft/gpl.html
+http://www.gnu.org/copyleft/gpl.html

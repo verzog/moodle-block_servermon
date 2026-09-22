@@ -33,8 +33,14 @@ jobs:
       fail-fast: false
       matrix:
         php: ['8.2', '8.3', '8.4']
-        moodle-branch: ['MOODLE_500_STABLE']
+        # MOODLE_503_STABLE is not cut yet (5.3 LTS releases ~Oct 2026 and
+        # currently lives on main); add it here once the stable branch exists.
+        moodle-branch: ['MOODLE_500_STABLE', 'MOODLE_501_STABLE', 'MOODLE_502_STABLE']
         database: [pgsql, mysqli]
+        exclude:
+          # Moodle 5.2 dropped PHP 8.2 (requires 8.3+), so this combo is invalid.
+          - php: '8.2'
+            moodle-branch: 'MOODLE_502_STABLE'
 
     steps:
       - name: Check out repository code
