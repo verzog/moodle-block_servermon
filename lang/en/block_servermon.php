@@ -19,7 +19,7 @@
  *
  * @package   block_servermon
  * @copyright 2026 Vernon Spain
- * @license   https://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
+ * @license   http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
 
 $string['cpu_core'] = 'Core {$a}';

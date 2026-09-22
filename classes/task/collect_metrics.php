@@ -19,7 +19,7 @@
  *
  * @package   block_servermon
  * @copyright 2026 Vernon Spain
- * @license   https://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
+ * @license   http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
 
 namespace block_servermon\task;
@@ -31,7 +31,7 @@ namespace block_servermon\task;
  *
  * @package   block_servermon
  * @copyright 2026 Vernon Spain
- * @license   https://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
+ * @license   http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
 class collect_metrics extends \core\task\scheduled_task {
     /**
