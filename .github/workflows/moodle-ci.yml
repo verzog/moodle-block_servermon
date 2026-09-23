@@ -8,10 +8,15 @@ env:
 jobs:
   test:
     runs-on: ubuntu-24.04
+    # Only the 5.3dev (main) matrix entry sets experimental; every stable-branch
+    # entry leaves it unset, so this evaluates to false and those jobs stay blocking.
+    continue-on-error: ${{ matrix.experimental || false }}
 
     services:
       postgres:
-        image: postgres:16
+        # PostgreSQL 17: Moodle 5.3 requires >=17, and 5.0/5.1/5.2 only enforce
+        # a lower minimum (>=16 on 5.2), so 17 satisfies every matrix branch.
+        image: postgres:17
         env:
           POSTGRES_USER: 'postgres'
           POSTGRES_HOST_AUTH_METHOD: 'trust'
@@ -34,13 +39,23 @@ jobs:
       matrix:
         php: ['8.2', '8.3', '8.4']
         # MOODLE_503_STABLE is not cut yet (5.3 LTS releases ~Oct 2026 and
-        # currently lives on main); add it here once the stable branch exists.
+        # currently lives on main); the non-blocking 5.3dev job below covers it
+        # until then, at which point promote it to a blocking entry here.
         moodle-branch: ['MOODLE_500_STABLE', 'MOODLE_501_STABLE', 'MOODLE_502_STABLE']
         database: [pgsql, mysqli]
         exclude:
           # Moodle 5.2 dropped PHP 8.2 (requires 8.3+), so this combo is invalid.
           - php: '8.2'
             moodle-branch: 'MOODLE_502_STABLE'
+        include:
+          # Early-warning job against 5.3dev (the main branch). Allowed to fail
+          # via continue-on-error: main is a moving target, so a red here flags
+          # upcoming breakage without blocking the PR. Promote to a blocking
+          # MOODLE_503_STABLE entry above once that stable branch is cut.
+          - php: '8.4'
+            moodle-branch: 'main'
+            database: 'pgsql'
+            experimental: true
 
     steps:
       - name: Check out repository code
