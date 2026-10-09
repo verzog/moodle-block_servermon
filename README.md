@@ -6,7 +6,7 @@ A lightweight Moodle block that displays live server health metrics on the admin
 
 ## Requirements
 
-- Moodle 5.0 or higher
+- Moodle 5.1 to 5.3 LTS
 - PHP 8.2 or higher
 - Linux-based server recommended (Windows Server is supported but most metrics will show as unavailable)
 - Site administrator role to view the block
@@ -328,7 +328,7 @@ The shared-server isolation panel reads OS-level configuration (`/etc/passwd`, P
 
 | Component | Requirement |
 |---|---|
-| Moodle | 5.0+ |
+| Moodle | 5.1–5.3 LTS |
 | PHP | 8.2+ |
 | Database | MySQL, MariaDB, PostgreSQL |
 | OS | Linux (full support), Windows Server (gauges unavailable) |

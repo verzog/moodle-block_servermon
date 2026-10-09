@@ -15,7 +15,7 @@
 // along with Moodle.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Server Monitor block for Moodle 5.0+.
+ * Server Monitor block for Moodle 5.1+.
  *
  * Displays CPU load, RAM usage, disk space, uptime and server info
  * on the admin Dashboard. Visible to site administrators only.

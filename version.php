@@ -24,7 +24,8 @@
 defined('MOODLE_INTERNAL') || die();
 
 $plugin->component = 'block_servermon';
-$plugin->version   = 2026062100;
-$plugin->requires  = 2025041400; // Moodle 5.0 minimum (version 2025041400), PHP 8.2+.
+$plugin->version   = 2026100900;
+$plugin->requires  = 2025100600; // Moodle 5.1 minimum, PHP 8.2+.
+$plugin->supported = [501, 503];
 $plugin->maturity  = MATURITY_STABLE;
-$plugin->release   = '1.9.1';
+$plugin->release   = '2.0.0';
