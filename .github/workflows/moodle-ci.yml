@@ -8,14 +8,13 @@ env:
 jobs:
   test:
     runs-on: ubuntu-24.04
-    # Only the 5.3dev (main) matrix entry sets experimental; every stable-branch
-    # entry leaves it unset, so this evaluates to false and those jobs stay blocking.
-    continue-on-error: ${{ matrix.experimental || false }}
+    # Moodle main is the post-5.3 development branch: a red there flags upcoming
+    # breakage without blocking the PR. Every stable-branch cell stays blocking.
+    continue-on-error: ${{ matrix.moodle-branch == 'main' }}
 
     services:
       postgres:
-        # PostgreSQL 17: Moodle 5.3 requires >=17, and 5.0/5.1/5.2 only enforce
-        # a lower minimum (>=16 on 5.2), so 17 satisfies every matrix branch.
+        # PostgreSQL 17 is the Moodle 5.3 minimum and works on every matrix branch.
         image: postgres:17
         env:
           POSTGRES_USER: 'postgres'
@@ -24,38 +23,32 @@ jobs:
           - 5432:5432
         options: --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 3
 
-      mysql:
-        image: mysql:8.4
+      mariadb:
+        # MariaDB 11 is newer than the 5.3 minimum (10.11) by choice.
+        image: mariadb:11
         env:
           MYSQL_ALLOW_EMPTY_PASSWORD: "true"
           MYSQL_CHARACTER_SET_SERVER: "utf8mb4"
           MYSQL_COLLATION_SERVER: "utf8mb4_unicode_ci"
         ports:
           - 3306:3306
-        options: --health-cmd="mysqladmin ping" --health-interval 10s --health-timeout 5s --health-retries 3
+        # The mariadb:11 image has no mysqladmin, so use its bundled healthcheck script.
+        options: >-
+          --health-cmd="healthcheck.sh --connect --innodb_initialized"
+          --health-interval 10s --health-timeout 5s --health-retries 3
 
     strategy:
       fail-fast: false
       matrix:
-        php: ['8.2', '8.3', '8.4']
-        # MOODLE_503_STABLE is not cut yet (5.3 LTS releases ~Oct 2026 and
-        # currently lives on main); the non-blocking 5.3dev job below covers it
-        # until then, at which point promote it to a blocking entry here.
-        moodle-branch: ['MOODLE_500_STABLE', 'MOODLE_501_STABLE', 'MOODLE_502_STABLE']
-        database: [pgsql, mysqli]
-        exclude:
-          # Moodle 5.2 dropped PHP 8.2 (requires 8.3+), so this combo is invalid.
-          - php: '8.2'
-            moodle-branch: 'MOODLE_502_STABLE'
+        # MOODLE_500_STABLE is deliberately excluded: it is below the Moodle 5.1 baseline.
+        # Moodle 5.2+ dropped PHP 8.2, so only the 5.1 cells test it.
         include:
-          # Early-warning job against 5.3dev (the main branch). Allowed to fail
-          # via continue-on-error: main is a moving target, so a red here flags
-          # upcoming breakage without blocking the PR. Promote to a blocking
-          # MOODLE_503_STABLE entry above once that stable branch is cut.
-          - php: '8.4'
-            moodle-branch: 'main'
-            database: 'pgsql'
-            experimental: true
+          - {moodle-branch: 'MOODLE_501_STABLE', php: '8.2', database: 'pgsql'}
+          - {moodle-branch: 'MOODLE_501_STABLE', php: '8.4', database: 'mariadb'}
+          - {moodle-branch: 'MOODLE_502_STABLE', php: '8.3', database: 'pgsql'}
+          - {moodle-branch: 'MOODLE_503_STABLE', php: '8.3', database: 'pgsql'}
+          - {moodle-branch: 'MOODLE_503_STABLE', php: '8.4', database: 'mariadb'}
+          - {moodle-branch: 'main', php: '8.4', database: 'pgsql'}  # Next version; allowed to fail.
 
     steps:
       - name: Check out repository code
@@ -114,8 +107,10 @@ jobs:
         if: ${{ !cancelled() }}
         run: moodle-plugin-ci mustache
 
+      # Grunt runs on the MOODLE_501_STABLE cells only: the lowest supported branch,
+      # where AMD builds are made. Other branches can minify differently.
       - name: Grunt
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && matrix.moodle-branch == 'MOODLE_501_STABLE' }}
         run: moodle-plugin-ci grunt --max-lint-warnings 0
 
       - name: PHPUnit tests
