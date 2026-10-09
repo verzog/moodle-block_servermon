@@ -5,6 +5,14 @@ All notable changes to block_servermon are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0] - 2026-10-09
+
+### Changed
+- **Moodle 5.1 is now the minimum version** (`requires` 2025100600) and the
+  plugin declares support for Moodle 5.1 to 5.3 LTS (`supported` [501, 503]).
+  Moodle 5.0 is no longer supported or tested; sites on 5.0 should stay on 1.9.1
+  until they upgrade Moodle.
+
 ## [1.9.1] - 2026-06-21
 
 ### Fixed
@@ -64,5 +72,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Earlier maintenance release. See the Git history for details.
 
+[2.0.0]: https://github.com/verzog/moodle-block_servermon/releases/tag/v2.0.0
+[1.9.1]: https://github.com/verzog/moodle-block_servermon/releases/tag/v1.9.1
 [1.9.0]: https://github.com/verzog/moodle-block_servermon/releases/tag/v1.9.0
 [1.8.1]: https://github.com/verzog/moodle-block_servermon/releases/tag/v1.8.1
