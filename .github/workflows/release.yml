@@ -1,0 +1,48 @@
+name: Release zip
+
+# Publishing a GitHub release builds the installable plugin zip and attaches it.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing release tag to rebuild the zip for (e.g. v2.0.0)'
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  COMPONENT: block_servermon
+  # Moodle's Install plugins page needs the zip's root folder to be the plugin's directory name.
+  PLUGIN_DIR: servermon
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    steps:
+      - name: Check out the release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - name: Check the tag matches $plugin->release
+        run: |
+          release=$(grep -oP "\\\$plugin->release\s*=\s*'\K[^']+" version.php)
+          if [ "v${release}" != "$TAG" ]; then
+            echo "::error::Tag $TAG does not match \$plugin->release '${release}' in version.php (expected v${release})."
+            exit 1
+          fi
+
+      - name: Build the plugin zip
+        run: |
+          git archive --format=zip --prefix="${PLUGIN_DIR}/" -o "${COMPONENT}-${TAG}.zip" HEAD
+          unzip -l "${COMPONENT}-${TAG}.zip"
+
+      - name: Attach the zip to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" "${COMPONENT}-${TAG}.zip" --clobber
