@@ -54,5 +54,27 @@ function xmldb_block_servermon_upgrade($oldversion) {
         upgrade_block_savepoint(true, 2026032903, 'servermon');
     }
 
+    if ($oldversion < 2026101000) {
+        // Add overall CPU percentage, the container flag and the hostname to block_servermon_log.
+        $table = new xmldb_table('block_servermon_log');
+
+        $field = new xmldb_field('cpu_pct', XMLDB_TYPE_NUMBER, '5, 1', null, null, null, null, 'disk_pct');
+        if (!$dbman->field_exists($table, $field)) {
+            $dbman->add_field($table, $field);
+        }
+
+        $field = new xmldb_field('container', XMLDB_TYPE_INTEGER, '1', null, XMLDB_NOTNULL, null, '0', 'cpu_pct');
+        if (!$dbman->field_exists($table, $field)) {
+            $dbman->add_field($table, $field);
+        }
+
+        $field = new xmldb_field('hostname', XMLDB_TYPE_CHAR, '255', null, null, null, null, 'container');
+        if (!$dbman->field_exists($table, $field)) {
+            $dbman->add_field($table, $field);
+        }
+
+        upgrade_block_savepoint(true, 2026101000, 'servermon');
+    }
+
     return true;
 }

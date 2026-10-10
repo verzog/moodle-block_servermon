@@ -359,4 +359,66 @@ final class metrics_test extends \advanced_testcase {
         ]);
         $this->assertSame('partial', $partial['level']);
     }
+
+    /**
+     * A detected container replaces the hosting heuristics with its runtime and clues.
+     *
+     * @return void
+     */
+    public function test_container_hosting_type(): void {
+        $this->resetAfterTest();
+
+        $docker = $this->call('get_hosting_type', [true, [
+            'container' => true,
+            'runtime'   => 'docker',
+            'clues'     => ['dockerenv', 'mountinfo'],
+        ]]);
+        $this->assertSame('Docker container (detected)', $docker['label']);
+        $this->assertSame(['/.dockerenv present', 'Container mount paths in /proc/self/mountinfo'], $docker['reasons']);
+
+        $generic = $this->call('get_hosting_type', [true, ['container' => true, 'runtime' => null, 'clues' => ['cgroup']]]);
+        $this->assertSame('Container (detected)', $generic['label']);
+    }
+
+    /**
+     * Gauges carry a note saying whether they show container or host figures.
+     *
+     * @return void
+     */
+    public function test_render_container_note(): void {
+        $this->resetAfterTest();
+
+        $this->assertSame('', $this->call('render_container_note', ['cpu', ['scope' => null], false]));
+
+        $cpu = $this->call('render_container_note', ['cpu', ['scope' => 'container', 'cpus' => 1.5], true]);
+        $this->assertStringContainsString('1.5 CPUs', $cpu);
+
+        $ram = $this->call('render_container_note', ['ram', ['scope' => 'host'], true]);
+        $this->assertStringContainsString('No memory limit', $ram);
+
+        $ram = $this->call('render_container_note', ['ram', ['scope' => 'unreadable'], true]);
+        $this->assertStringContainsString('cannot be read', $ram);
+
+        $disk = $this->call('render_container_note', ['disk', [], true]);
+        $this->assertStringContainsString('Docker storage disk', $disk);
+    }
+
+    /**
+     * Uptime is marked as the host's uptime inside a container.
+     *
+     * @return void
+     */
+    public function test_format_uptime(): void {
+        $this->resetAfterTest();
+
+        $this->assertSame(
+            '3d 4h 5m',
+            $this->call('format_uptime', [['uptime' => '3d 4h 5m', 'container' => ['container' => false]]])
+        );
+        $this->assertSame(
+            '3d 4h 5m (host server)',
+            $this->call('format_uptime', [['uptime' => '3d 4h 5m', 'container' => ['container' => true]]])
+        );
+        $this->assertSame('Unavailable', $this->call('format_uptime', [['uptime' => null, 'container' => ['container' => true]]]));
+    }
 }
