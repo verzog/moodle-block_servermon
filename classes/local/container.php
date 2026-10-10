@@ -40,6 +40,9 @@ namespace block_servermon\local;
  * @license   http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
 final class container {
+    /** @var int Limits at or above this (2^60 bytes) mean "no limit"; cgroup v1 uses a value near PHP_INT_MAX. */
+    private const NO_LIMIT = 1152921504606846976;
+
     /** @var string Directory prepended to every absolute path read (empty for the live system). */
     private string $root;
 
@@ -64,8 +67,10 @@ final class container {
      * Detect whether this process runs inside a container.
      *
      * Clues: dockerenv (/.dockerenv), containerenv (/run/.containerenv, Podman),
-     * mountinfo (Docker or Kubernetes mount paths), cgroup (container names in
-     * /proc/1/cgroup, cgroup v1) and kubernetes (KUBERNETES_SERVICE_HOST is set).
+     * systemd (/run/systemd/container, written by systemd inside LXC, nspawn and
+     * other system containers), mountinfo (Docker, Kubernetes, Podman or containerd
+     * mount paths), cgroup (container names in /proc/1/cgroup, cgroup v1) and
+     * kubernetes (KUBERNETES_SERVICE_HOST is set).
      *
      * @return array Keys: container (bool), runtime (string|null: docker, podman,
      *               kubernetes, lxc or containerd), clues (string[] clue codes).
@@ -85,6 +90,13 @@ final class container {
         if (file_exists($this->path('/run/.containerenv'))) {
             $clues[]    = 'containerenv';
             $runtimes[] = 'podman';
+        }
+
+        // Systemd writes the container manager's name here (lxc, docker, podman, systemd-nspawn).
+        $manager = $this->read_file('/run/systemd/container');
+        if ($manager !== null && trim($manager) !== '') {
+            $clues[]    = 'systemd';
+            $runtimes[] = self::runtime_from_manager(trim($manager));
         }
 
         $runtime = self::runtime_from_mountinfo($this->read_lines('/proc/self/mountinfo'));
@@ -115,56 +127,76 @@ final class container {
     /**
      * Read the container's memory limit and current usage.
      *
-     * Usage excludes inactive page cache, matching what `docker stats` reports.
+     * Usage is measured at the container boundary and excludes inactive page cache,
+     * matching what `docker stats` reports. The limit is the lowest one set on any
+     * cgroup from this process up to the container boundary, because a parent's
+     * limit also applies to its children.
      *
-     * @param int|null $hosttotal Host RAM in bytes; a limit at or above it counts as no limit.
-     * @return array|null Keys: limit, used (bytes) — or null when no limit is set or readable.
+     * @param int|null $hosttotal Host RAM in bytes, if known; a limit at or above it counts as no limit.
+     * @return array Keys: status ('limited', 'unlimited' or 'unreadable'), limit and used
+     *               (bytes, null unless status is 'limited').
      */
-    public function memory(?int $hosttotal = null): ?array {
-        $dir = $this->cgroup_dir('memory');
+    public function memory(?int $hosttotal = null): array {
+        $unreadable = ['status' => 'unreadable', 'limit' => null, 'used' => null];
+        $v2         = $this->cgroup_version() === 2;
+
+        $dir = $this->usage_dir('memory');
         if ($dir === null) {
-            return null;
+            return $unreadable;
+        }
+        $current = self::parse_limit($this->read_file($dir . ($v2 ? '/memory.current' : '/memory.usage_in_bytes')));
+        if ($current === null) {
+            return $unreadable;
         }
 
-        if ($this->cgroup_version() === 2) {
-            $limit   = self::parse_limit($this->read_file($dir . '/memory.max'));
-            $current = self::parse_limit($this->read_file($dir . '/memory.current'));
-            $stat    = self::parse_keyed($this->read_lines($dir . '/memory.stat'));
-            $inactive = $stat['inactive_file'] ?? 0;
-        } else {
-            $limit   = self::parse_limit($this->read_file($dir . '/memory.limit_in_bytes'));
-            $current = self::parse_limit($this->read_file($dir . '/memory.usage_in_bytes'));
-            $stat    = self::parse_keyed($this->read_lines($dir . '/memory.stat'));
-            $inactive = $stat['total_inactive_file'] ?? 0;
+        $limit    = null;
+        $seenfile = false;
+        foreach ($this->limit_dirs('memory') as $limitdir) {
+            $raw = $this->read_file($limitdir . ($v2 ? '/memory.max' : '/memory.limit_in_bytes'));
+            if ($raw === null) {
+                continue;
+            }
+            $seenfile = true;
+            $value    = self::parse_limit($raw);
+            // Cgroup v1 reports "no limit" as a huge number rather than "max".
+            if ($value === null || $value <= 0 || $value >= self::NO_LIMIT) {
+                continue;
+            }
+            if ($hosttotal !== null && $hosttotal > 0 && $value >= $hosttotal) {
+                continue;
+            }
+            $limit = $limit === null ? $value : min($limit, $value);
         }
 
-        if ($limit === null || $current === null || $limit <= 0) {
-            return null;
+        if (!$seenfile) {
+            return $unreadable;
         }
-        // Cgroup v1 reports "no limit" as a huge number rather than "max".
-        if ($hosttotal !== null && $hosttotal > 0 && $limit >= $hosttotal) {
-            return null;
+        if ($limit === null) {
+            return ['status' => 'unlimited', 'limit' => null, 'used' => null];
         }
 
-        return ['limit' => $limit, 'used' => max(0, min($limit, $current - $inactive))];
+        $stat     = self::parse_keyed($this->read_lines($dir . '/memory.stat'));
+        $inactive = $stat[$v2 ? 'inactive_file' : 'total_inactive_file'] ?? 0;
+        return ['status' => 'limited', 'limit' => $limit, 'used' => max(0, min($limit, $current - $inactive))];
     }
 
     /**
      * Read the container's CPU allowance.
      *
      * The allowance is the smallest of the CPU quota (cpu.max, or cfs_quota_us with
-     * cgroup v1), the number of CPUs it may run on (cpuset) and the host's CPU count.
+     * cgroup v1, lowest from this process up to the container boundary), the number
+     * of CPUs it may run on (cpuset) and the host's CPU count when known.
      *
-     * @param int $hostcpus Number of CPUs visible on the host.
-     * @return array Keys: cpus (float allowance), limited (bool, true when below the host count).
+     * @param int|null $hostcpus Number of CPUs on the host, or null when /proc/stat is unreadable.
+     * @return array Keys: cpus (float allowance, or null when nothing is known), limited
+     *               (bool, true when a quota or cpuset restricts the container).
      */
-    public function cpu_allowance(int $hostcpus): array {
-        $hostcpus = max(1, $hostcpus);
-        $cpus     = (float) $hostcpus;
+    public function cpu_allowance(?int $hostcpus): array {
+        $limits = [];
 
-        $dir = $this->cgroup_dir('cpu');
-        if ($dir !== null) {
-            if ($this->cgroup_version() === 2) {
+        $v2 = $this->cgroup_version() === 2;
+        foreach ($this->limit_dirs('cpu') as $dir) {
+            if ($v2) {
                 $quota = self::parse_cpu_max($this->read_file($dir . '/cpu.max'));
             } else {
                 $quota = self::parse_cfs_quota(
@@ -173,20 +205,30 @@ final class container {
                 );
             }
             if ($quota !== null) {
-                $cpus = min($cpus, $quota);
+                $limits[] = $quota;
             }
         }
 
-        $setdir = $this->cgroup_dir('cpuset');
+        // The effective cpuset already reflects every parent's cpuset.
+        $setdir = $this->usage_dir('cpuset');
         if ($setdir !== null) {
-            $file  = $this->cgroup_version() === 2 ? '/cpuset.cpus.effective' : '/cpuset.cpus';
-            $count = self::parse_cpuset($this->read_file($setdir . $file) ?? '');
+            $count = self::parse_cpuset($this->read_file($setdir . ($v2 ? '/cpuset.cpus.effective' : '/cpuset.cpus')) ?? '');
             if ($count > 0) {
-                $cpus = min($cpus, (float) $count);
+                $limits[] = (float) $count;
             }
         }
 
-        return ['cpus' => round($cpus, 2), 'limited' => $cpus < $hostcpus];
+        $candidates = $limits;
+        if ($hostcpus !== null && $hostcpus > 0) {
+            $candidates[] = (float) $hostcpus;
+        }
+        if (empty($candidates)) {
+            return ['cpus' => null, 'limited' => false];
+        }
+
+        $cpus    = min($candidates);
+        $limited = !empty($limits) && ($hostcpus === null || $cpus < $hostcpus);
+        return ['cpus' => round($cpus, 2), 'limited' => $limited];
     }
 
     /**
@@ -196,7 +238,7 @@ final class container {
      */
     public function cpu_usage_usec(): ?int {
         if ($this->cgroup_version() === 2) {
-            $dir = $this->cgroup_dir('cpu');
+            $dir = $this->usage_dir('cpu');
             if ($dir === null) {
                 return null;
             }
@@ -204,7 +246,7 @@ final class container {
             return $stat['usage_usec'] ?? null;
         }
 
-        $dir = $this->cgroup_dir('cpuacct');
+        $dir = $this->usage_dir('cpuacct');
         if ($dir === null) {
             return null;
         }
@@ -258,7 +300,7 @@ final class container {
      * /var/lib/docker/containers/<id>/, which works on cgroup v1 and v2 alike.
      *
      * @param array $lines Lines from /proc/self/mountinfo.
-     * @return string|null docker, kubernetes or podman — or null when no container mount is found.
+     * @return string|null docker, kubernetes, podman or containerd — or null when no container mount is found.
      */
     public static function runtime_from_mountinfo(array $lines): ?string {
         foreach ($lines as $line) {
@@ -271,6 +313,25 @@ final class container {
             if (strpos($line, '/containers/storage/overlay-containers/') !== false) {
                 return 'podman';
             }
+            if (strpos($line, '/io.containerd.runtime.') !== false) {
+                return 'containerd';
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Map the name in /run/systemd/container to a runtime.
+     *
+     * @param string $manager File contents, such as lxc, lxc-libvirt, docker or systemd-nspawn.
+     * @return string|null docker, podman or lxc — or null for other managers (reported as a generic container).
+     */
+    public static function runtime_from_manager(string $manager): ?string {
+        if ($manager === 'docker' || $manager === 'podman') {
+            return $manager;
+        }
+        if (strpos($manager, 'lxc') === 0) {
+            return 'lxc';
         }
         return null;
     }
@@ -425,37 +486,90 @@ final class container {
     }
 
     /**
-     * Find this process's cgroup directory for a controller.
+     * Find the directory that holds the whole container's usage for a controller.
      *
-     * Prefers the path named in /proc/self/cgroup (needed when the container shares
-     * the host's cgroup namespace) and falls back to the mount root, which is the
-     * container's own cgroup when it has a private namespace (the Docker default).
+     * With cgroup v2 and a private cgroup namespace (the Docker default), the mount
+     * root is the container's own cgroup, even when an init system inside the
+     * container puts PHP in a nested service cgroup. The real host root has no
+     * cgroup.type file, so its absence means the container shares the host's
+     * namespace and this process's own cgroup is used instead. With cgroup v1,
+     * Docker mounts the container's cgroup as the controller root, so the path from
+     * /proc/self/cgroup is only used when it exists under the mount.
      *
      * @param string $controller Controller name: memory, cpu, cpuacct or cpuset.
-     * @return string|null Absolute directory (without the test root), or null when absent.
+     * @return string|null Absolute directory (without the test root), or null when unavailable.
      */
-    private function cgroup_dir(string $controller): ?string {
-        $version = $this->cgroup_version();
-        if ($version === null) {
+    private function usage_dir(string $controller): ?string {
+        [$base, $sub] = $this->cgroup_location($controller);
+        if ($base === null) {
             return null;
         }
 
-        $lines = $this->read_lines('/proc/self/cgroup');
-        if ($version === 2) {
-            $base = '/sys/fs/cgroup';
-            $sub  = self::cgroup_path($lines, '');
-        } else {
-            $base = $this->v1_mount($controller);
-            if ($base === null) {
-                return null;
+        if ($this->cgroup_version() === 2) {
+            if (file_exists($this->path($base . '/cgroup.type'))) {
+                return $base;
             }
-            $sub = self::cgroup_path($lines, $controller);
+            if ($sub !== null && $sub !== '/' && is_dir($this->path($base . $sub))) {
+                return $base . $sub;
+            }
+            return null;
         }
 
         if ($sub !== null && $sub !== '/' && is_dir($this->path($base . $sub))) {
             return $base . $sub;
         }
-        return is_dir($this->path($base)) ? $base : null;
+        return $base;
+    }
+
+    /**
+     * List the cgroup directories whose limits apply to this process.
+     *
+     * Runs from this process's own cgroup up to the mount root, because a limit set
+     * on any parent also caps its children. Directories that do not exist are skipped.
+     *
+     * @param string $controller Controller name: memory or cpu.
+     * @return string[] Absolute directories (without the test root), innermost first.
+     */
+    private function limit_dirs(string $controller): array {
+        [$base, $sub] = $this->cgroup_location($controller);
+        if ($base === null) {
+            return [];
+        }
+
+        $dirs = [];
+        $sub  = ($sub === null || $sub === '/') ? '' : rtrim($sub, '/');
+        while ($sub !== '') {
+            if (is_dir($this->path($base . $sub))) {
+                $dirs[] = $base . $sub;
+            }
+            $sub = substr($sub, 0, (int) strrpos($sub, '/'));
+        }
+        $dirs[] = $base;
+        return $dirs;
+    }
+
+    /**
+     * Find the cgroup mount for a controller and this process's path within it.
+     *
+     * @param string $controller Controller name: memory, cpu, cpuacct or cpuset.
+     * @return array Two elements: [string|null mount directory, string|null path from /proc/self/cgroup].
+     */
+    private function cgroup_location(string $controller): array {
+        $version = $this->cgroup_version();
+        if ($version === null) {
+            return [null, null];
+        }
+
+        $lines = $this->read_lines('/proc/self/cgroup');
+        if ($version === 2) {
+            return ['/sys/fs/cgroup', self::cgroup_path($lines, '')];
+        }
+
+        $base = $this->v1_mount($controller);
+        if ($base === null || !is_dir($this->path($base))) {
+            return [null, null];
+        }
+        return [$base, self::cgroup_path($lines, $controller)];
     }
 
     /**

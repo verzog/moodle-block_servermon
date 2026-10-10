@@ -244,7 +244,8 @@ The block records server metrics every 5 minutes to a lightweight database table
 | `ram_pct` | RAM used as a percentage of total |
 | `disk_pct` | Disk used as a percentage of total (for the configured disk path) |
 | `cpu_pct` | Overall CPU%; inside a container, the share of the container's CPU allowance |
-| `container` | `1` when CPU and RAM were read from a container's cgroup, otherwise `0` |
+| `container` | `1` when `cpu_pct` was measured from a container's cgroup, otherwise `0` |
+| `hostname` | The server that logged the row; in Docker this is the container ID, so samples from a separate cron container are not shown as the web container's |
 
 #### Scheduled task
 
@@ -310,6 +311,7 @@ whether it runs in a container and, if so, reads the container's own limits from
 | `/.dockerenv` exists | Docker creates this file in every container |
 | `/run/.containerenv` exists | Podman creates this file in every container |
 | Container paths in `/proc/self/mountinfo` | Docker mounts `/etc/hostname` from `/var/lib/docker/containers/<id>/` (works with cgroup v2) |
+| `/run/systemd/container` exists | Systemd inside LXC, systemd-nspawn and other system containers writes the manager's name here |
 | Container names in `/proc/1/cgroup` | `docker`, `kubepods`, `lxc` or `containerd` (cgroup v1, or a shared cgroup namespace) |
 | `KUBERNETES_SERVICE_HOST` is set | The site runs on Kubernetes |
 
@@ -325,9 +327,11 @@ underneath, instead of the host-based guess above.
 | Disk gauge | Unchanged, with a note: `/` in a container is usually the host's Docker storage disk. Set **Disk path to monitor** to a mounted volume to measure that instead. |
 | Server uptime | Marked "(host server)", because containers share the host's uptime. |
 | Isolation panel | A note explains that the users, PHP-FPM pools and processes listed are the container's own. |
-| Metric log | CPU and RAM are logged from the container's cgroup, and the row is flagged `container = 1`. |
+| Metric log | CPU and RAM are logged from the container's cgroup. Rows with a container CPU figure are flagged `container = 1` and record the container's hostname. The block only reuses a logged CPU sample from its own container, so a separate cron container's figures are never shown as the web container's. |
 
-If the cgroup files cannot be read, each gauge falls back to the host figures and says so.
+Limits are read from every cgroup level up to the container boundary, so a limit set on the whole container still applies when an
+init system inside it runs PHP in its own service cgroup. If the cgroup files cannot be read, each gauge falls back to the host
+figures and says so.
 
 ---
 

@@ -86,5 +86,9 @@ final class collect_metrics_test extends \advanced_testcase {
         $latest = $DB->get_records('block_servermon_log', null, 'timecreated DESC', '*', 0, 1);
         $latest = reset($latest);
         $this->assertGreaterThanOrEqual(time() - (2 * MINSECS), (int) $latest->timecreated);
+
+        // The snapshot records which server (or container) logged it.
+        $this->assertSame(\core_text::substr((string) gethostname(), 0, 255), $latest->hostname);
+        $this->assertContains((int) $latest->container, [0, 1]);
     }
 }

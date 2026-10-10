@@ -64,8 +64,10 @@ for ($i = 0; $i < $maxcores; $i++) {
 $headers[] = 'ram_pct';
 $headers[] = 'disk_pct';
 // Overall CPU; when container is 1 it is the share of the container's CPU allowance.
+// The hostname tells containers apart when cron runs in a separate container.
 $headers[] = 'cpu_pct';
 $headers[] = 'container';
+$headers[] = 'hostname';
 fputcsv($out, $headers);
 
 // Write data rows.
@@ -79,6 +81,7 @@ foreach ($records as $row) {
     $line[] = $row->disk_pct ?? '';
     $line[] = $row->cpu_pct ?? '';
     $line[] = (int) ($row->container ?? 0);
+    $line[] = $row->hostname ?? '';
     fputcsv($out, $line);
 }
 

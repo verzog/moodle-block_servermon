@@ -17,8 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   figures, with a note, when no limit is set or the cgroup files are unreadable.
 - Notes on the disk gauge, server uptime and isolation panel explaining which
   figures belong to the host rather than the container.
-- **Metric log** gains `cpu_pct` (overall CPU%) and `container` columns, which are
-  also included in the CSV export.
+- **Metric log** gains `cpu_pct` (overall CPU%), `container` and `hostname` columns,
+  which are also included in the CSV export. A logged container CPU sample is only
+  reused by the container that recorded it.
 
 ## [2.0.0] - 2026-10-09
 

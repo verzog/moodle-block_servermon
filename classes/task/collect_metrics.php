@@ -52,7 +52,9 @@ class collect_metrics extends \core\task\scheduled_task {
      *
      * Inside a container, CPU and RAM come from the container's cgroup instead:
      * CPU as a share of its CPU allowance (no per-core figures) and RAM against
-     * its memory limit. Those rows are flagged with container = 1.
+     * its memory limit. Rows whose CPU figure came from the cgroup are flagged
+     * with container = 1 and the hostname (the container ID in Docker), so the
+     * block only reuses samples taken in its own container.
      *
      * @return void
      */
@@ -67,7 +69,8 @@ class collect_metrics extends \core\task\scheduled_task {
 
         $record = new \stdClass();
         $record->timecreated = time();
-        $record->container   = $container !== null ? 1 : 0;
+        $record->hostname    = \core_text::substr((string) gethostname(), 0, 255);
+        $record->container   = 0;
         $record->cpu_pct     = null;
         $record->cpu_percore = null;
         $record->cpu_cores   = 0;
@@ -75,6 +78,7 @@ class collect_metrics extends \core\task\scheduled_task {
         $containercpu = $container !== null ? $this->collect_container_cpu($container) : null;
         if ($containercpu !== null) {
             [$record->cpu_pct, $record->cpu_cores] = $containercpu;
+            $record->container = 1;
         } else {
             [$percore, $cores] = $this->collect_cpu_percore($islinux);
             $record->cpu_cores   = $cores;
@@ -99,10 +103,11 @@ class collect_metrics extends \core\task\scheduled_task {
      *                    rounded up to whole CPUs] — or null when cgroup CPU accounting is unreadable.
      */
     private function collect_container_cpu(\block_servermon\local\container $container): ?array {
-        $snap = $this->read_proc_stat();
-        $hostcpus = count(preg_grep('/^cpu\d+$/', array_keys($snap)));
-
-        $allowance = $container->cpu_allowance($hostcpus);
+        $hostcpus  = count(preg_grep('/^cpu\d+$/', array_keys($this->read_proc_stat())));
+        $allowance = $container->cpu_allowance($hostcpus > 0 ? $hostcpus : null);
+        if ($allowance['cpus'] === null) {
+            return null;
+        }
         $pct = $container->sample_cpu_pct($allowance['cpus'], 1000000); // 1-second window — fine in a background task.
         if ($pct === null) {
             return null;
@@ -147,26 +152,26 @@ class collect_metrics extends \core\task\scheduled_task {
      * @return float|null RAM usage percentage, or null if unavailable.
      */
     private function collect_ram_pct(bool $islinux, ?\block_servermon\local\container $container = null): ?float {
-        if (!$islinux || !is_readable('/proc/meminfo')) {
+        if (!$islinux) {
             return null;
         }
-        $meminfo = @file_get_contents('/proc/meminfo');
-        if ($meminfo === false) {
-            return null;
-        }
-        preg_match('/MemTotal:\s+(\d+)/i', $meminfo, $mtotal);
-        preg_match('/MemAvailable:\s+(\d+)/i', $meminfo, $mavail);
-        if (!$mtotal || !$mavail) {
-            return null;
-        }
-        $totalkb = (int) $mtotal[1];
-        $freekb  = (int) $mavail[1];
 
-        $memory = $container !== null ? $container->memory($totalkb * 1024) : null;
-        if ($memory !== null) {
-            return round(($memory['used'] / $memory['limit']) * 100, 1);
+        $totalkb = null;
+        $freekb  = null;
+        $meminfo = is_readable('/proc/meminfo') ? (string) @file_get_contents('/proc/meminfo') : '';
+        if (preg_match('/MemTotal:\s+(\d+)/i', $meminfo, $mtotal) && preg_match('/MemAvailable:\s+(\d+)/i', $meminfo, $mavail)) {
+            $totalkb = (int) $mtotal[1];
+            $freekb  = (int) $mavail[1];
         }
-        return $totalkb > 0 ? round((($totalkb - $freekb) / $totalkb) * 100, 1) : null;
+
+        // The container's limit is used even when /proc/meminfo is unreadable.
+        if ($container !== null) {
+            $memory = $container->memory($totalkb !== null ? $totalkb * 1024 : null);
+            if ($memory['status'] === 'limited') {
+                return round(($memory['used'] / $memory['limit']) * 100, 1);
+            }
+        }
+        return $totalkb ? round((($totalkb - $freekb) / $totalkb) * 100, 1) : null;
     }
 
     /**

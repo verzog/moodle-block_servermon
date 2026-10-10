@@ -201,7 +201,10 @@ class block_servermon extends block_base {
         }
 
         $allowance = $container->cpu_allowance($this->count_host_cpus());
-        $pct       = $this->get_container_cpu_from_log();
+        if ($allowance['cpus'] === null) {
+            return null;
+        }
+        $pct = $this->get_container_cpu_from_log();
         if ($pct === null) {
             $pct = $container->sample_cpu_pct($allowance['cpus'], 500000);
         }
@@ -215,27 +218,29 @@ class block_servermon extends block_base {
     /**
      * Count the CPUs listed in /proc/stat (the host's CPUs when in a container).
      *
-     * @return int Number of CPUs, at least 1.
+     * @return int|null Number of CPUs, or null when /proc/stat is unreadable.
      */
-    private function count_host_cpus(): int {
-        $count = 0;
-        foreach (array_keys($this->read_proc_stat()) as $key) {
-            if (preg_match('/^cpu\d+$/', $key)) {
-                $count++;
-            }
-        }
-        return max(1, $count);
+    private function count_host_cpus(): ?int {
+        $count = count(preg_grep('/^cpu\d+$/', array_keys($this->read_proc_stat())));
+        return $count > 0 ? $count : null;
     }
 
     /**
      * Read the most recent container CPU snapshot recorded by the scheduled task.
      *
-     * @return float|null CPU percentage of the container allowance, or null when
-     *                    no container snapshot newer than 10 minutes is available.
+     * Cron may run in a different container (a separate cron service or another
+     * replica), so a snapshot is only used when it was logged under this
+     * container's hostname, which Docker sets to the container ID.
+     *
+     * @return float|null CPU percentage of the container allowance, or null when no
+     *                    snapshot from this container newer than 10 minutes is available.
      */
     private function get_container_cpu_from_log(): ?float {
         $row = $this->get_latest_log_row();
         if (!$row || empty($row->container) || !isset($row->cpu_pct)) {
+            return null;
+        }
+        if (($row->hostname ?? '') !== (string) gethostname()) {
             return null;
         }
         return round((float) $row->cpu_pct, 1);
@@ -405,8 +410,9 @@ class block_servermon extends block_base {
      * Read RAM usage from /proc/meminfo.
      *
      * Inside a container with a memory limit, the container's limit and usage
-     * replace the host figures (scope "container"). Without a limit the host
-     * figures are kept (scope "host").
+     * replace the host figures (scope "container"), even if /proc/meminfo is
+     * unreadable. Otherwise the host figures are kept, with scope "host" when no
+     * limit is set or "unreadable" when the cgroup files cannot be read.
      *
      * @param bool $islinux Whether the server is running Linux.
      * @param \block_servermon\local\container|null $container The detected container, or null when not in one.
@@ -415,39 +421,53 @@ class block_servermon extends block_base {
     private function get_ram(bool $islinux, ?\block_servermon\local\container $container = null): array {
         $result = ['total' => null, 'used' => null, 'free' => null, 'pct' => null, 'scope' => null];
 
-        if (!$islinux || !is_readable('/proc/meminfo')) {
+        if (!$islinux) {
             return $result;
         }
 
-        $meminfo = file_get_contents('/proc/meminfo');
-        preg_match('/MemTotal:\s+(\d+)/i', $meminfo, $mtotal);
-        preg_match('/MemAvailable:\s+(\d+)/i', $meminfo, $mavail);
-
-        if (!$mtotal || !$mavail) {
-            return $result;
-        }
-
-        $totalkb = (int) $mtotal[1];
-        $freekb  = (int) $mavail[1];
-        $usedkb  = $totalkb - $freekb;
+        [$totalkb, $freekb] = $this->read_host_meminfo();
 
         if ($container !== null) {
-            $result['scope'] = 'host';
-            $memory = $container->memory($totalkb * 1024);
-            if ($memory !== null) {
+            $memory = $container->memory($totalkb !== null ? $totalkb * 1024 : null);
+            if ($memory['status'] === 'limited') {
                 $result['scope'] = 'container';
                 $totalkb = intdiv($memory['limit'], 1024);
-                $usedkb  = intdiv($memory['used'], 1024);
-                $freekb  = $totalkb - $usedkb;
+                $freekb  = $totalkb - intdiv($memory['used'], 1024);
+            } else {
+                // Host figures, labelled by why the container's own were not used.
+                $result['scope'] = $memory['status'] === 'unlimited' ? 'host' : 'unreadable';
             }
         }
 
+        if ($totalkb === null) {
+            return $result;
+        }
+
+        $usedkb = $totalkb - $freekb;
         $result['total'] = round($totalkb / 1048576, 2);
-        $result['free'] = round($freekb / 1048576, 2);
-        $result['used'] = round($usedkb / 1048576, 2);
+        $result['free']  = round($freekb / 1048576, 2);
+        $result['used']  = round($usedkb / 1048576, 2);
         $result['pct']   = $totalkb > 0 ? round(($usedkb / $totalkb) * 100, 1) : null;
 
         return $result;
+    }
+
+    /**
+     * Read the host's total and available RAM from /proc/meminfo.
+     *
+     * @return array Two elements: [int|null total KB, int|null available KB].
+     */
+    private function read_host_meminfo(): array {
+        if (!is_readable('/proc/meminfo')) {
+            return [null, null];
+        }
+        $meminfo = (string) @file_get_contents('/proc/meminfo');
+        preg_match('/MemTotal:\s+(\d+)/i', $meminfo, $mtotal);
+        preg_match('/MemAvailable:\s+(\d+)/i', $meminfo, $mavail);
+        if (!$mtotal || !$mavail) {
+            return [null, null];
+        }
+        return [(int) $mtotal[1], (int) $mavail[1]];
     }
 
     /**
@@ -1618,6 +1638,8 @@ JSEOF;
             $note = get_string('container_cpu_host', 'block_servermon');
         } else if ($type === 'ram' && $scope === 'container') {
             $note = get_string('container_ram_note', 'block_servermon');
+        } else if ($type === 'ram' && $scope === 'unreadable') {
+            $note = get_string('container_ram_unreadable', 'block_servermon');
         } else if ($type === 'ram') {
             $note = get_string('container_ram_host', 'block_servermon');
         } else {

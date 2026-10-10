@@ -72,6 +72,7 @@ final class container_test extends \advanced_testcase {
             '/proc/1/cgroup'                           => "0::/\n",
             '/proc/self/cgroup'                        => "0::/\n",
             '/sys/fs/cgroup/cgroup.controllers'        => "cpuset cpu io memory pids\n",
+            '/sys/fs/cgroup/cgroup.type'               => "domain\n",
             '/sys/fs/cgroup/memory.max'                => "2147483648\n",
             '/sys/fs/cgroup/memory.current'            => "1073741824\n",
             '/sys/fs/cgroup/memory.stat'               => "anon 805306368\nfile 268435456\ninactive_file 268435456\n",
@@ -128,6 +129,23 @@ final class container_test extends \advanced_testcase {
     }
 
     /**
+     * LXC and other system containers with a private cgroup namespace are found from
+     * /run/systemd/container.
+     *
+     * @return void
+     */
+    public function test_detect_systemd_container(): void {
+        $root = $this->make_root(['/run/systemd/container' => "lxc\n", '/proc/1/cgroup' => "0::/\n"]);
+        $lxc  = (new container($root, []))->detect();
+        $this->assertSame('lxc', $lxc['runtime']);
+        $this->assertSame(['systemd'], $lxc['clues']);
+
+        $nspawn = (new container($this->make_root(['/run/systemd/container' => "systemd-nspawn\n"]), []))->detect();
+        $this->assertTrue($nspawn['container']);
+        $this->assertNull($nspawn['runtime']);
+    }
+
+    /**
      * Memory limit and usage (minus inactive page cache) come from cgroup v2 files.
      *
      * @return void
@@ -135,18 +153,72 @@ final class container_test extends \advanced_testcase {
     public function test_memory_cgroup_v2(): void {
         $memory = (new container($this->make_root($this->docker_v2_files()), []))->memory(16 * 1073741824);
 
-        $this->assertSame(['limit' => 2147483648, 'used' => 805306368], $memory);
+        $this->assertSame(['status' => 'limited', 'limit' => 2147483648, 'used' => 805306368], $memory);
+
+        // The host's RAM is not needed to read a cgroup v2 limit.
+        $memory = (new container($this->make_root($this->docker_v2_files()), []))->memory(null);
+        $this->assertSame('limited', $memory['status']);
     }
 
     /**
-     * A cgroup v2 container without a memory limit ("max") reports no limit.
+     * A cgroup v2 container without a memory limit ("max") reports no limit, and
+     * missing files are reported as unreadable rather than as no limit.
      *
      * @return void
      */
-    public function test_memory_cgroup_v2_unlimited(): void {
-        $files = ['/sys/fs/cgroup/memory.max' => "max\n"] + $this->docker_v2_files();
+    public function test_memory_cgroup_v2_unlimited_or_unreadable(): void {
+        $files  = ['/sys/fs/cgroup/memory.max' => "max\n"] + $this->docker_v2_files();
+        $memory = (new container($this->make_root($files), []))->memory(16 * 1073741824);
+        $this->assertSame(['status' => 'unlimited', 'limit' => null, 'used' => null], $memory);
 
-        $this->assertNull((new container($this->make_root($files), []))->memory(16 * 1073741824));
+        $files = $this->docker_v2_files();
+        unset($files['/sys/fs/cgroup/memory.max']);
+        $this->assertSame('unreadable', (new container($this->make_root($files), []))->memory(16 * 1073741824)['status']);
+
+        unset($files['/sys/fs/cgroup/memory.current']);
+        $this->assertSame('unreadable', (new container($this->make_root($files), []))->memory(16 * 1073741824)['status']);
+    }
+
+    /**
+     * With PHP in a nested service cgroup inside the container, usage is read at the
+     * container boundary and the parent's limit still applies.
+     *
+     * @return void
+     */
+    public function test_nested_service_cgroup(): void {
+        $files = [
+            '/proc/self/cgroup'                                           => "0::/system.slice/php-fpm.service\n",
+            '/sys/fs/cgroup/system.slice/php-fpm.service/memory.max'      => "max\n",
+            '/sys/fs/cgroup/system.slice/php-fpm.service/memory.current'  => "104857600\n",
+            '/sys/fs/cgroup/system.slice/php-fpm.service/cpu.max'         => "max 100000\n",
+            '/sys/fs/cgroup/system.slice/php-fpm.service/cpu.stat'        => "usage_usec 1000\n",
+        ] + $this->docker_v2_files();
+        $container = new container($this->make_root($files), []);
+
+        $this->assertSame(['status' => 'limited', 'limit' => 2147483648, 'used' => 805306368], $container->memory(null));
+        $this->assertSame(123456789, $container->cpu_usage_usec());
+        $this->assertSame(['cpus' => 1.5, 'limited' => true], $container->cpu_allowance(8));
+    }
+
+    /**
+     * Sharing the host's cgroup namespace, the process's own cgroup is the container.
+     *
+     * @return void
+     */
+    public function test_host_cgroup_namespace(): void {
+        $scope = '/sys/fs/cgroup/system.slice/docker-3f2a9c.scope';
+        $files = [
+            '/proc/self/cgroup'                 => "0::/system.slice/docker-3f2a9c.scope\n",
+            '/sys/fs/cgroup/cgroup.controllers' => "cpuset cpu io memory pids\n",
+            '/sys/fs/cgroup/cpu.stat'           => "usage_usec 999999999\n",
+            $scope . '/memory.max'              => "536870912\n",
+            $scope . '/memory.current'          => "268435456\n",
+            $scope . '/cpu.stat'                => "usage_usec 4242\n",
+        ];
+        $container = new container($this->make_root($files), []);
+
+        $this->assertSame(['status' => 'limited', 'limit' => 536870912, 'used' => 268435456], $container->memory(null));
+        $this->assertSame(4242, $container->cpu_usage_usec());
     }
 
     /**
@@ -163,10 +235,11 @@ final class container_test extends \advanced_testcase {
             '/sys/fs/cgroup/memory/memory.stat'           => "cache 104857600\ntotal_inactive_file 104857600\n",
         ];
         $memory = (new container($this->make_root($files), []))->memory(8 * 1073741824);
-        $this->assertSame(['limit' => 1073741824, 'used' => 524288000], $memory);
+        $this->assertSame(['status' => 'limited', 'limit' => 1073741824, 'used' => 524288000], $memory);
 
+        // The "no limit" value is recognised even when the host's RAM is unknown.
         $files['/sys/fs/cgroup/memory/memory.limit_in_bytes'] = "9223372036854771712\n";
-        $this->assertNull((new container($this->make_root($files), []))->memory(8 * 1073741824));
+        $this->assertSame('unlimited', (new container($this->make_root($files), []))->memory(null)['status']);
     }
 
     /**
@@ -182,6 +255,10 @@ final class container_test extends \advanced_testcase {
         $container = new container($this->make_root($files), []);
         $this->assertSame(['cpus' => 4.0, 'limited' => true], $container->cpu_allowance(8));
         $this->assertSame(['cpus' => 2.0, 'limited' => false], $container->cpu_allowance(2));
+
+        // An unknown host CPU count does not cap the allowance at one CPU.
+        $this->assertSame(['cpus' => 4.0, 'limited' => true], $container->cpu_allowance(null));
+        $this->assertSame(['cpus' => null, 'limited' => false], (new container($this->make_root([]), []))->cpu_allowance(null));
     }
 
     /**
@@ -256,6 +333,11 @@ final class container_test extends \advanced_testcase {
      */
     public function test_runtime_from_lines(): void {
         $this->assertSame('docker', container::runtime_from_mountinfo([self::DOCKER_MOUNTINFO]));
+        $this->assertSame('containerd', container::runtime_from_mountinfo([
+            '700 600 0:50 / / rw - overlay overlay rw,lowerdir=/run/containerd/io.containerd.runtime.v2.task/k8s.io/abc/rootfs',
+        ]));
+        $this->assertSame('lxc', container::runtime_from_manager('lxc-libvirt'));
+        $this->assertNull(container::runtime_from_manager('systemd-nspawn'));
         $this->assertNull(container::runtime_from_mountinfo(['22 1 259:1 / / rw - ext4 /dev/root rw']));
 
         $this->assertSame('docker', container::runtime_from_cgroup(['12:cpu,cpuacct:/docker/3f2a9c']));

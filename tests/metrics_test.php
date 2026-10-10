@@ -396,6 +396,9 @@ final class metrics_test extends \advanced_testcase {
         $ram = $this->call('render_container_note', ['ram', ['scope' => 'host'], true]);
         $this->assertStringContainsString('No memory limit', $ram);
 
+        $ram = $this->call('render_container_note', ['ram', ['scope' => 'unreadable'], true]);
+        $this->assertStringContainsString('cannot be read', $ram);
+
         $disk = $this->call('render_container_note', ['disk', [], true]);
         $this->assertStringContainsString('Docker storage disk', $disk);
     }
