@@ -15,13 +15,17 @@ A lightweight Moodle block that displays live server health metrics on the admin
 
 ## Installation
 
-1. Download `block_servermon.zip`
+1. Download `block_servermon-vX.Y.Z.zip` from the release's **Assets** on the
+   [Releases page](https://github.com/verzog/moodle-block_servermon/releases).
+   Don't use GitHub's "Source code (zip)": its folder is named after the repository, so Moodle rejects it
+   unless you enter `servermon` under **Install plugins → Show more… → Rename the root directory**.
 2. In Moodle, go to **Site Administration → Plugins → Install plugins**
 3. Upload the zip file and click **Install plugin from the ZIP file**
 4. Follow the on-screen confirmation steps
 5. Go to your **Dashboard**, turn editing on, click **Add a block**, and select **Server Monitor**
 
-Alternatively, unzip the file and copy the `servermon` folder to `/blocks/` on your server, then visit **Site Administration → Notifications** to complete the install.
+Alternatively, unzip the file and copy the `servermon` folder to `public/blocks/` in your Moodle directory,
+then visit **Site Administration → Notifications** to complete the install.
 
 ---
 
