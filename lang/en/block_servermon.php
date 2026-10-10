@@ -22,6 +22,21 @@
  * @license   http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
 
+$string['container_clue_cgroup'] = '/proc/1/cgroup names a container';
+$string['container_clue_containerenv'] = '/run/.containerenv present';
+$string['container_clue_dockerenv'] = '/.dockerenv present';
+$string['container_clue_kubernetes'] = 'KUBERNETES_SERVICE_HOST is set';
+$string['container_clue_mountinfo'] = 'Container mount paths in /proc/self/mountinfo';
+$string['container_cpu_host'] = 'Container CPU accounting is unreadable, so this shows the whole host\'s CPU.';
+$string['container_cpu_note'] = 'Share of this container\'s CPU allowance ({$a} CPUs). Load averages are for the whole host.';
+$string['container_disk_note'] = 'In a container this is usually the host\'s Docker storage disk. To check a mounted volume instead, set its path in the block settings.';
+$string['container_ram_host'] = 'No memory limit is set for this container, so this shows the whole host\'s RAM.';
+$string['container_ram_note'] = 'Measured against this container\'s memory limit. Page cache that can be freed is not counted.';
+$string['container_runtime_containerd'] = 'containerd';
+$string['container_runtime_docker'] = 'Docker';
+$string['container_runtime_kubernetes'] = 'Kubernetes';
+$string['container_runtime_lxc'] = 'LXC';
+$string['container_runtime_podman'] = 'Podman';
 $string['cpu_core'] = 'Core {$a}';
 $string['cpu_label'] = 'CPU Load';
 $string['csv_export'] = 'Download metrics CSV (last 7 days)';
@@ -57,6 +72,8 @@ $string['health_cron_title'] = 'Cron freshness';
 $string['health_swap_detail'] = 'Swap: {$a->used} GB used of {$a->total} GB ({$a->pct}%). Sustained swap use usually means RAM pressure.';
 $string['health_swap_none'] = 'Swap is disabled (SwapTotal 0).';
 $string['health_swap_title'] = 'Swap usage';
+$string['hosting_container'] = '{$a} container (detected)';
+$string['hosting_container_generic'] = 'Container (detected)';
 $string['hosting_label'] = 'Hosting Type';
 $string['hosting_reason_cores'] = '{$a} CPU cores visible';
 $string['hosting_reason_hostname'] = '/etc/hostname present';
@@ -70,6 +87,7 @@ $string['hosting_windows'] = 'Windows Server (unconfirmed)';
 $string['hostname_label'] = 'Hostname';
 $string['info_toggle'] = 'Server Info';
 $string['iso_caveat_unreadable'] = 'Note: {$a} pool file(s) were unreadable, so other (possibly isolated) pools could not be checked.';
+$string['iso_container_note'] = 'This site runs in a container, so the users, PHP-FPM pools and processes below are the container\'s own, not the host server\'s. To check isolation between sites, review the host and how its containers are separated.';
 $string['iso_current_dedicated'] = 'This Moodle request runs as the dedicated OS user {$a->user} (via {$a->sapi}).';
 $string['iso_current_generic'] = 'This Moodle request runs as {$a->user} (via {$a->sapi}) — a shared/privileged account, so this site is not isolated from others on the server.';
 $string['iso_flag_generic'] = 'Runs as a generic web user';
@@ -184,5 +202,6 @@ $string['store_redis'] = 'redis store';
 $string['task_collect_metrics'] = 'Server Monitor - collect metric snapshot';
 $string['timestamp_label'] = 'Last checked';
 $string['unavailable'] = 'Unavailable';
+$string['uptime_host'] = '{$a} (host server)';
 $string['uptime_label'] = 'Server Uptime';
 $string['webserver_label'] = 'Web Server';

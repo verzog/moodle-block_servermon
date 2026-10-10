@@ -243,6 +243,8 @@ The block records server metrics every 5 minutes to a lightweight database table
 | `cpu_core0_pct` … `cpu_coreN_pct` | Per-core CPU% (one column per physical core) |
 | `ram_pct` | RAM used as a percentage of total |
 | `disk_pct` | Disk used as a percentage of total (for the configured disk path) |
+| `cpu_pct` | Overall CPU%; inside a container, the share of the container's CPU allowance |
+| `container` | `1` when CPU and RAM were read from a container's cgroup, otherwise `0` |
 
 #### Scheduled task
 
@@ -293,6 +295,39 @@ The block attempts to classify the server environment using a simple **resource-
 | 0 | Likely shared hosting (unconfirmed) |
 
 The matched signals are listed beneath the label in the Server Info panel so you can see why the guess was made. On Windows the label is simply "Windows Server (unconfirmed)".
+
+---
+
+### Docker and Other Containers
+
+Inside a container, `/proc/meminfo` and `/proc/stat` describe the whole host, not the container. The block therefore checks
+whether it runs in a container and, if so, reads the container's own limits from its cgroup (`/sys/fs/cgroup`, v1 or v2).
+
+#### Detection
+
+| Clue | Meaning |
+|---|---|
+| `/.dockerenv` exists | Docker creates this file in every container |
+| `/run/.containerenv` exists | Podman creates this file in every container |
+| Container paths in `/proc/self/mountinfo` | Docker mounts `/etc/hostname` from `/var/lib/docker/containers/<id>/` (works with cgroup v2) |
+| Container names in `/proc/1/cgroup` | `docker`, `kubepods`, `lxc` or `containerd` (cgroup v1, or a shared cgroup namespace) |
+| `KUBERNETES_SERVICE_HOST` is set | The site runs on Kubernetes |
+
+When any clue matches, the Hosting Type row shows, for example, **Docker container (detected)** with the matching clues
+underneath, instead of the host-based guess above.
+
+#### What changes inside a container
+
+| Area | Behaviour |
+|---|---|
+| CPU gauge | The container's CPU time as a percentage of its CPU allowance: the smallest of its CPU quota (`--cpus`), the CPUs it may use (`--cpuset-cpus`) and the host's CPU count. Per-core bars are hidden because cgroups do not record per-core usage. Load averages are still the host's. |
+| RAM gauge | Usage against the container's memory limit (`--memory`), not counting page cache that can be freed (as `docker stats` does). Without a limit, the host's RAM is shown with a note saying so. |
+| Disk gauge | Unchanged, with a note: `/` in a container is usually the host's Docker storage disk. Set **Disk path to monitor** to a mounted volume to measure that instead. |
+| Server uptime | Marked "(host server)", because containers share the host's uptime. |
+| Isolation panel | A note explains that the users, PHP-FPM pools and processes listed are the container's own. |
+| Metric log | CPU and RAM are logged from the container's cgroup, and the row is flagged `container = 1`. |
+
+If the cgroup files cannot be read, each gauge falls back to the host figures and says so.
 
 ---
 

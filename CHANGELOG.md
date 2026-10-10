@@ -5,6 +5,21 @@ All notable changes to block_servermon are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.0] - 2026-10-10
+
+### Added
+- **Docker and other container detection.** The Hosting Type row now reports a
+  detected container (Docker, Podman, Kubernetes, LXC or containerd) and the clues
+  that identified it, instead of guessing from the host's CPU and RAM.
+- **Container-aware gauges.** Inside a container the CPU gauge shows usage as a
+  share of the container's CPU allowance, and the RAM gauge shows usage against
+  its memory limit, read from cgroup v1 or v2. Each gauge falls back to the host
+  figures, with a note, when no limit is set or the cgroup files are unreadable.
+- Notes on the disk gauge, server uptime and isolation panel explaining which
+  figures belong to the host rather than the container.
+- **Metric log** gains `cpu_pct` (overall CPU%) and `container` columns, which are
+  also included in the CSV export.
+
 ## [2.0.0] - 2026-10-09
 
 ### Changed
@@ -72,6 +87,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Earlier maintenance release. See the Git history for details.
 
+[2.1.0]: https://github.com/verzog/moodle-block_servermon/releases/tag/v2.1.0
 [2.0.0]: https://github.com/verzog/moodle-block_servermon/releases/tag/v2.0.0
 [1.9.1]: https://github.com/verzog/moodle-block_servermon/releases/tag/v1.9.1
 [1.9.0]: https://github.com/verzog/moodle-block_servermon/releases/tag/v1.9.0

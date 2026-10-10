@@ -63,6 +63,9 @@ for ($i = 0; $i < $maxcores; $i++) {
 }
 $headers[] = 'ram_pct';
 $headers[] = 'disk_pct';
+// Overall CPU; when container is 1 it is the share of the container's CPU allowance.
+$headers[] = 'cpu_pct';
+$headers[] = 'container';
 fputcsv($out, $headers);
 
 // Write data rows.
@@ -74,6 +77,8 @@ foreach ($records as $row) {
     }
     $line[] = $row->ram_pct ?? '';
     $line[] = $row->disk_pct ?? '';
+    $line[] = $row->cpu_pct ?? '';
+    $line[] = (int) ($row->container ?? 0);
     fputcsv($out, $line);
 }
 

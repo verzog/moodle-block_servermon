@@ -109,19 +109,23 @@ class block_servermon extends block_base {
      * @return array
      */
     private function collect_metrics(): array {
-        $islinux = (strtoupper(substr(PHP_OS, 0, 3)) !== 'WIN');
+        $islinux   = (strtoupper(substr(PHP_OS, 0, 3)) !== 'WIN');
+        $container = $islinux ? new \block_servermon\local\container() : null;
+        $detected  = $container ? $container->detect() : ['container' => false, 'runtime' => null, 'clues' => []];
+        $incontainer = $detected['container'] ? $container : null;
 
         return [
-            'cpu'       => $this->get_cpu($islinux),
-            'ram'       => $this->get_ram($islinux),
+            'cpu'       => $this->get_cpu($islinux, $incontainer),
+            'ram'       => $this->get_ram($islinux, $incontainer),
             'disk'      => $this->get_disk($islinux),
             'uptime'    => $this->get_uptime($islinux),
+            'container' => $detected,
             'php'       => PHP_VERSION,
             'os'        => PHP_OS,
             'hostname'  => gethostname() ?: 'unknown',
             'webserver' => $_SERVER['SERVER_SOFTWARE'] ?? 'unknown',
             'time'      => userdate(time()),
-            'hosting'   => $this->get_hosting_type($islinux),
+            'hosting'   => $this->get_hosting_type($islinux, $detected),
             'isolation' => $this->get_isolation_info($islinux),
         ];
     }
@@ -135,10 +139,16 @@ class block_servermon extends block_base {
      * degrades gracefully if /proc/stat is unreadable.
      * Load averages are always collected live as supplementary context.
      *
+     * Inside a container, /proc/stat covers the whole host, so the gauge instead
+     * shows the container's CPU time as a share of its CPU allowance (scope
+     * "container"). If cgroup CPU accounting is unreadable it falls back to the
+     * host figures (scope "host").
+     *
      * @param bool $islinux Whether the server is running Linux.
-     * @return array Keys: pct, load1, load5, load15, cores, percore.
+     * @param \block_servermon\local\container|null $container The detected container, or null when not in one.
+     * @return array Keys: pct, load1, load5, load15, cores, percore, scope, cpus.
      */
-    private function get_cpu(bool $islinux): array {
+    private function get_cpu(bool $islinux, ?\block_servermon\local\container $container = null): array {
         $result = [
             'pct'     => null,
             'load1'   => null,
@@ -146,6 +156,8 @@ class block_servermon extends block_base {
             'load15'  => null,
             'cores'   => null,
             'percore' => [],
+            'scope'   => null,
+            'cpus'    => null,
         ];
 
         if (!$islinux) {
@@ -153,6 +165,14 @@ class block_servermon extends block_base {
         }
 
         $result = array_merge($result, $this->get_load_averages());
+
+        if ($container !== null) {
+            $containercpu = $this->get_container_cpu($container);
+            if ($containercpu !== null) {
+                return array_merge($result, $containercpu);
+            }
+            $result['scope'] = 'host';
+        }
 
         $logged = $this->get_cpu_from_log();
         if ($logged !== null) {
@@ -167,12 +187,66 @@ class block_servermon extends block_base {
     }
 
     /**
-     * Read the most recent CPU snapshot recorded by the scheduled task.
+     * Read the container's CPU usage as a share of its CPU allowance.
      *
-     * @return array|null Keys: pct, cores, percore — or null when no
-     *                    snapshot newer than 10 minutes is available.
+     * Prefers the latest scheduled-task snapshot and falls back to a live
+     * 0.5 s sample of the cgroup CPU counter.
+     *
+     * @param \block_servermon\local\container $container The detected container.
+     * @return array|null Keys: pct, scope, cpus — or null when cgroup CPU accounting is unreadable.
      */
-    private function get_cpu_from_log(): ?array {
+    private function get_container_cpu(\block_servermon\local\container $container): ?array {
+        if ($container->cpu_usage_usec() === null) {
+            return null;
+        }
+
+        $allowance = $container->cpu_allowance($this->count_host_cpus());
+        $pct       = $this->get_container_cpu_from_log();
+        if ($pct === null) {
+            $pct = $container->sample_cpu_pct($allowance['cpus'], 500000);
+        }
+        if ($pct === null) {
+            return null;
+        }
+
+        return ['pct' => $pct, 'scope' => 'container', 'cpus' => $allowance['cpus']];
+    }
+
+    /**
+     * Count the CPUs listed in /proc/stat (the host's CPUs when in a container).
+     *
+     * @return int Number of CPUs, at least 1.
+     */
+    private function count_host_cpus(): int {
+        $count = 0;
+        foreach (array_keys($this->read_proc_stat()) as $key) {
+            if (preg_match('/^cpu\d+$/', $key)) {
+                $count++;
+            }
+        }
+        return max(1, $count);
+    }
+
+    /**
+     * Read the most recent container CPU snapshot recorded by the scheduled task.
+     *
+     * @return float|null CPU percentage of the container allowance, or null when
+     *                    no container snapshot newer than 10 minutes is available.
+     */
+    private function get_container_cpu_from_log(): ?float {
+        $row = $this->get_latest_log_row();
+        if (!$row || empty($row->container) || !isset($row->cpu_pct)) {
+            return null;
+        }
+        return round((float) $row->cpu_pct, 1);
+    }
+
+    /**
+     * Fetch the most recent block_servermon_log row from the last 10 minutes.
+     *
+     * @return \stdClass|null The row, or null when the table is missing or no fresh row exists.
+     */
+    private function get_latest_log_row(): ?\stdClass {
         global $DB;
 
         if (!$DB->get_manager()->table_exists('block_servermon_log')) {
@@ -189,6 +263,19 @@ class block_servermon extends block_base {
             1
         );
         $row = reset($rows);
+        return $row ?: null;
+    }
+
+    /**
+     * Read the most recent per-core CPU snapshot recorded by the scheduled task.
+     *
+     * Container snapshots hold no per-core figures, so they are skipped here.
+     *
+     * @return array|null Keys: pct, cores, percore — or null when no
+     *                    snapshot newer than 10 minutes is available.
+     */
+    private function get_cpu_from_log(): ?array {
+        $row = $this->get_latest_log_row();
         if (!$row || empty($row->cpu_percore)) {
             return null;
         }
@@ -317,11 +404,16 @@ class block_servermon extends block_base {
     /**
      * Read RAM usage from /proc/meminfo.
      *
+     * Inside a container with a memory limit, the container's limit and usage
+     * replace the host figures (scope "container"). Without a limit the host
+     * figures are kept (scope "host").
+     *
      * @param bool $islinux Whether the server is running Linux.
-     * @return array Keys: total, used, free, pct (all in GB).
+     * @param \block_servermon\local\container|null $container The detected container, or null when not in one.
+     * @return array Keys: total, used, free, pct (all in GB), scope.
      */
-    private function get_ram(bool $islinux): array {
-        $result = ['total' => null, 'used' => null, 'free' => null, 'pct' => null];
+    private function get_ram(bool $islinux, ?\block_servermon\local\container $container = null): array {
+        $result = ['total' => null, 'used' => null, 'free' => null, 'pct' => null, 'scope' => null];
 
         if (!$islinux || !is_readable('/proc/meminfo')) {
             return $result;
@@ -338,6 +430,17 @@ class block_servermon extends block_base {
         $totalkb = (int) $mtotal[1];
         $freekb  = (int) $mavail[1];
         $usedkb  = $totalkb - $freekb;
+
+        if ($container !== null) {
+            $result['scope'] = 'host';
+            $memory = $container->memory($totalkb * 1024);
+            if ($memory !== null) {
+                $result['scope'] = 'container';
+                $totalkb = intdiv($memory['limit'], 1024);
+                $usedkb  = intdiv($memory['used'], 1024);
+                $freekb  = $totalkb - $usedkb;
+            }
+        }
 
         $result['total'] = round($totalkb / 1048576, 2);
         $result['free'] = round($freekb / 1048576, 2);
@@ -404,14 +507,20 @@ class block_servermon extends block_base {
     /**
      * Guess whether the server is shared hosting, VPS, or dedicated.
      *
-     * Uses heuristic signals — the label is always marked as unconfirmed.
+     * Uses heuristic signals — the label is always marked as unconfirmed. A detected
+     * container is reported instead, since the heuristics would describe the host.
      *
      * @param bool $islinux Whether the server is running Linux.
+     * @param array $container Result from \block_servermon\local\container::detect().
      * @return array Keys: label (string), reasons (array of strings).
      */
-    private function get_hosting_type(bool $islinux): array {
+    private function get_hosting_type(bool $islinux, array $container = ['container' => false]): array {
         if (!$islinux) {
             return ['label' => get_string('hosting_windows', 'block_servermon'), 'reasons' => []];
+        }
+
+        if (!empty($container['container'])) {
+            return $this->container_hosting_type($container);
         }
 
         $score   = 0;
@@ -446,6 +555,27 @@ class block_servermon extends block_base {
         }
 
         return ['label' => $this->hosting_label_from_score($score), 'reasons' => $reasons];
+    }
+
+    /**
+     * Build the hosting label and clue list for a detected container.
+     *
+     * @param array $container Result from \block_servermon\local\container::detect().
+     * @return array Keys: label (string), reasons (array of strings).
+     */
+    private function container_hosting_type(array $container): array {
+        if ($container['runtime'] !== null) {
+            $runtime = get_string('container_runtime_' . $container['runtime'], 'block_servermon');
+            $label   = get_string('hosting_container', 'block_servermon', $runtime);
+        } else {
+            $label = get_string('hosting_container_generic', 'block_servermon');
+        }
+
+        $reasons = [];
+        foreach ($container['clues'] as $clue) {
+            $reasons[] = get_string('container_clue_' . $clue, 'block_servermon');
+        }
+        return ['label' => $label, 'reasons' => $reasons];
     }
 
     /**
@@ -1288,15 +1418,16 @@ class block_servermon extends block_base {
 
         $html  = '<div class="block-servermon">';
         $html .= $this->render_print_header($m);
-        $html .= $this->render_metric_row('cpu', $m['cpu']);
-        $html .= $this->render_metric_row('ram', $m['ram']);
-        $html .= $this->render_metric_row('disk', $m['disk']);
+        $incontainer = !empty($m['container']['container']);
+        $html .= $this->render_metric_row('cpu', $m['cpu'], $incontainer);
+        $html .= $this->render_metric_row('ram', $m['ram'], $incontainer);
+        $html .= $this->render_metric_row('disk', $m['disk'], $incontainer);
         $html .= $this->render_process_section();
         $html .= '<details class="bsm-details">';
         $html .= '<summary class="bsm-summary">' . $togglelabel . '</summary>';
         $html .= $this->render_info_table($m);
         $html .= '</details>';
-        $html .= $this->render_isolation_section($m['isolation']);
+        $html .= $this->render_isolation_section($m['isolation'], $incontainer);
         $html .= $this->render_debug_footer();
         $html .= $this->render_csv_link();
         $html .= $this->render_print_button();
@@ -1394,9 +1525,10 @@ JSEOF;
      *
      * @param string $type One of: cpu, ram, disk.
      * @param array $data Metric data array.
+     * @param bool $incontainer Whether the site runs in a container.
      * @return string HTML output.
      */
-    private function render_metric_row(string $type, array $data): string {
+    private function render_metric_row(string $type, array $data, bool $incontainer = false): string {
         $pct    = $data['pct'];
         $label  = get_string("{$type}_label", 'block_servermon');
         $colour = $this->status_colour($pct);
@@ -1414,6 +1546,7 @@ JSEOF;
         $html .= '</div>';
         $html .= $this->render_bar($pct, $colour);
         $html .= $this->render_metric_detail($type, $data);
+        $html .= $this->render_container_note($type, $data, $incontainer);
         $html .= $unavailmsg;
         $html .= $this->render_percore_bars($type, $data);
         $html .= '</div>';
@@ -1463,6 +1596,34 @@ JSEOF;
             return '<div class="bsm-detail">' . $detail . '</div>';
         }
         return '';
+    }
+
+    /**
+     * Render a note saying whether a gauge shows the container's or the host's figures.
+     *
+     * @param string $type Metric type: cpu, ram, or disk.
+     * @param array $data Metric data array (cpu and ram carry a scope key).
+     * @param bool $incontainer Whether the site runs in a container.
+     * @return string HTML output, or empty string outside a container.
+     */
+    private function render_container_note(string $type, array $data, bool $incontainer): string {
+        if (!$incontainer) {
+            return '';
+        }
+
+        $scope = $data['scope'] ?? null;
+        if ($type === 'cpu' && $scope === 'container') {
+            $note = get_string('container_cpu_note', 'block_servermon', $data['cpus']);
+        } else if ($type === 'cpu') {
+            $note = get_string('container_cpu_host', 'block_servermon');
+        } else if ($type === 'ram' && $scope === 'container') {
+            $note = get_string('container_ram_note', 'block_servermon');
+        } else if ($type === 'ram') {
+            $note = get_string('container_ram_host', 'block_servermon');
+        } else {
+            $note = get_string('container_disk_note', 'block_servermon');
+        }
+        return '<div class="bsm-detail bsm-container-note">' . $note . '</div>';
     }
 
     /**
@@ -1660,7 +1821,7 @@ JSEOF;
      */
     private function render_info_table(array $m): string {
         $rows = [
-            get_string('uptime_label', 'block_servermon')    => $m['uptime'] ?? get_string('unavailable', 'block_servermon'),
+            get_string('uptime_label', 'block_servermon')    => $this->format_uptime($m),
             get_string('php_label', 'block_servermon')       => htmlspecialchars($m['php']),
             get_string('os_label', 'block_servermon')        => htmlspecialchars($m['os']),
             get_string('hostname_label', 'block_servermon')  => htmlspecialchars($m['hostname']),
@@ -1686,12 +1847,29 @@ JSEOF;
     }
 
     /**
+     * Format the uptime cell, marking it as the host's uptime inside a container.
+     *
+     * @param array $m Metrics array from collect_metrics().
+     * @return string Uptime text.
+     */
+    private function format_uptime(array $m): string {
+        if ($m['uptime'] === null) {
+            return get_string('unavailable', 'block_servermon');
+        }
+        if (!empty($m['container']['container'])) {
+            return get_string('uptime_host', 'block_servermon', $m['uptime']);
+        }
+        return $m['uptime'];
+    }
+
+    /**
      * Render the collapsible OS-users and PHP-FPM-pools section.
      *
      * @param array $iso Isolation info from get_isolation_info().
+     * @param bool $incontainer Whether the site runs in a container.
      * @return string HTML output.
      */
-    private function render_isolation_section(array $iso): string {
+    private function render_isolation_section(array $iso, bool $incontainer = false): string {
         $label = get_string('iso_toggle', 'block_servermon');
 
         $poolusers = [];
@@ -1702,7 +1880,12 @@ JSEOF;
         }
         $context = ['current' => $iso['pools']['currentuser'], 'poolusers' => $poolusers];
 
-        $body  = $this->render_isolation_current($iso['pools']);
+        $body = '';
+        if ($incontainer) {
+            $body .= '<div class="bsm-debug-alert bsm-alert-info">'
+                . get_string('iso_container_note', 'block_servermon') . '</div>';
+        }
+        $body .= $this->render_isolation_current($iso['pools']);
         $body .= $this->render_isolation_users($iso['users'], $context);
         $body .= $this->render_isolation_pools($iso['pools']);
         $body .= $this->render_isolation_procvis($iso['procvis']);

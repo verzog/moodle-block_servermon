@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8" ?>
-<XMLDB PATH="blocks/servermon/db" VERSION="20260329" COMMENT="XMLDB file for block_servermon"
+<XMLDB PATH="blocks/servermon/db" VERSION="20261010" COMMENT="XMLDB file for block_servermon"
     xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
     xsi:noNamespaceSchemaLocation="../../../lib/xmldb/xmldb.xsd"
 >
@@ -12,6 +12,8 @@
         <FIELD NAME="cpu_percore" TYPE="text" NOTNULL="false" COMMENT="JSON array of per-core CPU percentages"/>
         <FIELD NAME="ram_pct" TYPE="number" LENGTH="5" DECIMALS="1" NOTNULL="false" COMMENT="RAM usage percentage"/>
         <FIELD NAME="disk_pct" TYPE="number" LENGTH="5" DECIMALS="1" NOTNULL="false" COMMENT="Disk usage percentage"/>
+        <FIELD NAME="cpu_pct" TYPE="number" LENGTH="5" DECIMALS="1" NOTNULL="false" COMMENT="Overall CPU usage percentage (of the container allowance when container is 1)"/>
+        <FIELD NAME="container" TYPE="int" LENGTH="1" NOTNULL="true" DEFAULT="0" COMMENT="1 when CPU and RAM come from a container cgroup"/>
       </FIELDS>
       <KEYS>
         <KEY NAME="primary" TYPE="primary" FIELDS="id"/>

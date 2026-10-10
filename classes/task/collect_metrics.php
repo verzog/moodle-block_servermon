@@ -50,26 +50,64 @@ class collect_metrics extends \core\task\scheduled_task {
      * RAM from /proc/meminfo, disk from disk_free_space(), writes one row
      * to {block_servermon_log}, then purges rows older than 7 days.
      *
+     * Inside a container, CPU and RAM come from the container's cgroup instead:
+     * CPU as a share of its CPU allowance (no per-core figures) and RAM against
+     * its memory limit. Those rows are flagged with container = 1.
+     *
      * @return void
      */
     public function execute(): void {
         global $DB;
 
-        $islinux = (strtoupper(substr(PHP_OS, 0, 3)) !== 'WIN');
-
-        [$percore, $cores] = $this->collect_cpu_percore($islinux);
+        $islinux   = (strtoupper(substr(PHP_OS, 0, 3)) !== 'WIN');
+        $container = $islinux ? new \block_servermon\local\container() : null;
+        if ($container !== null && !$container->detect()['container']) {
+            $container = null;
+        }
 
         $record = new \stdClass();
         $record->timecreated = time();
-        $record->cpu_cores   = $cores;
-        $record->cpu_percore = !empty($percore) ? json_encode($percore) : null;
-        $record->ram_pct     = $this->collect_ram_pct($islinux);
-        $record->disk_pct    = $this->collect_disk_pct($islinux);
+        $record->container   = $container !== null ? 1 : 0;
+        $record->cpu_pct     = null;
+        $record->cpu_percore = null;
+        $record->cpu_cores   = 0;
+
+        $containercpu = $container !== null ? $this->collect_container_cpu($container) : null;
+        if ($containercpu !== null) {
+            [$record->cpu_pct, $record->cpu_cores] = $containercpu;
+        } else {
+            [$percore, $cores] = $this->collect_cpu_percore($islinux);
+            $record->cpu_cores   = $cores;
+            $record->cpu_percore = !empty($percore) ? json_encode($percore) : null;
+            $record->cpu_pct     = !empty($percore) ? round(array_sum($percore) / count($percore), 1) : null;
+        }
+
+        $record->ram_pct  = $this->collect_ram_pct($islinux, $container);
+        $record->disk_pct = $this->collect_disk_pct($islinux);
 
         $DB->insert_record('block_servermon_log', $record);
 
         $cutoff = time() - (7 * DAYSECS);
         $DB->delete_records_select('block_servermon_log', 'timecreated < :cutoff', ['cutoff' => $cutoff]);
+    }
+
+    /**
+     * Sample the container's cgroup CPU counter over 1 s.
+     *
+     * @param \block_servermon\local\container $container The detected container.
+     * @return array|null Two-element array: [float pct of the CPU allowance, int allowance
+     *                    rounded up to whole CPUs] — or null when cgroup CPU accounting is unreadable.
+     */
+    private function collect_container_cpu(\block_servermon\local\container $container): ?array {
+        $snap = $this->read_proc_stat();
+        $hostcpus = count(preg_grep('/^cpu\d+$/', array_keys($snap)));
+
+        $allowance = $container->cpu_allowance($hostcpus);
+        $pct = $container->sample_cpu_pct($allowance['cpus'], 1000000); // 1-second window — fine in a background task.
+        if ($pct === null) {
+            return null;
+        }
+        return [$pct, (int) ceil($allowance['cpus'])];
     }
 
     /**
@@ -102,12 +140,13 @@ class collect_metrics extends \core\task\scheduled_task {
     }
 
     /**
-     * Read RAM usage percentage from /proc/meminfo.
+     * Read RAM usage percentage from /proc/meminfo, or the container's memory limit.
      *
      * @param bool $islinux Whether the server is running Linux.
+     * @param \block_servermon\local\container|null $container The detected container, or null when not in one.
      * @return float|null RAM usage percentage, or null if unavailable.
      */
-    private function collect_ram_pct(bool $islinux): ?float {
+    private function collect_ram_pct(bool $islinux, ?\block_servermon\local\container $container = null): ?float {
         if (!$islinux || !is_readable('/proc/meminfo')) {
             return null;
         }
@@ -122,6 +161,11 @@ class collect_metrics extends \core\task\scheduled_task {
         }
         $totalkb = (int) $mtotal[1];
         $freekb  = (int) $mavail[1];
+
+        $memory = $container !== null ? $container->memory($totalkb * 1024) : null;
+        if ($memory !== null) {
+            return round(($memory['used'] / $memory['limit']) * 100, 1);
+        }
         return $totalkb > 0 ? round((($totalkb - $freekb) / $totalkb) * 100, 1) : null;
     }
 
