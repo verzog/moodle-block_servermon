@@ -1,122 +1,21 @@
 name: Moodle Plugin CI
 
-on: [push, pull_request]
+# Run on pull requests, and on pushes to main and tags only. A plain "[push, pull_request]" runs the whole matrix
+# twice for every push to a PR branch (once per event).
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - '*'
+  pull_request:
 
-env:
-  TZ: Australia/Sydney
+permissions:
+  contents: read
 
 jobs:
-  test:
-    runs-on: ubuntu-24.04
-    # Moodle main is the post-5.3 development branch: a red there flags upcoming
-    # breakage without blocking the PR. Every stable-branch cell stays blocking.
-    continue-on-error: ${{ matrix.moodle-branch == 'main' }}
-
-    services:
-      postgres:
-        # PostgreSQL 17 is the Moodle 5.3 minimum and works on every matrix branch.
-        image: postgres:17
-        env:
-          POSTGRES_USER: 'postgres'
-          POSTGRES_HOST_AUTH_METHOD: 'trust'
-        ports:
-          - 5432:5432
-        options: --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 3
-
-      mariadb:
-        # MariaDB 11 is newer than the 5.3 minimum (10.11) by choice.
-        image: mariadb:11
-        env:
-          MYSQL_ALLOW_EMPTY_PASSWORD: "true"
-          MYSQL_CHARACTER_SET_SERVER: "utf8mb4"
-          MYSQL_COLLATION_SERVER: "utf8mb4_unicode_ci"
-        ports:
-          - 3306:3306
-        # The mariadb:11 image has no mysqladmin, so use its bundled healthcheck script.
-        options: >-
-          --health-cmd="healthcheck.sh --connect --innodb_initialized"
-          --health-interval 10s --health-timeout 5s --health-retries 3
-
-    strategy:
-      fail-fast: false
-      matrix:
-        # MOODLE_500_STABLE is deliberately excluded: it is below the Moodle 5.1 baseline.
-        # Moodle 5.2+ dropped PHP 8.2, so only the 5.1 cells test it.
-        include:
-          - {moodle-branch: 'MOODLE_501_STABLE', php: '8.2', database: 'pgsql'}
-          - {moodle-branch: 'MOODLE_501_STABLE', php: '8.4', database: 'mariadb'}
-          - {moodle-branch: 'MOODLE_502_STABLE', php: '8.3', database: 'pgsql'}
-          - {moodle-branch: 'MOODLE_503_STABLE', php: '8.3', database: 'pgsql'}
-          - {moodle-branch: 'MOODLE_503_STABLE', php: '8.4', database: 'mariadb'}
-          - {moodle-branch: 'main', php: '8.4', database: 'pgsql'}  # Next version; allowed to fail.
-
-    steps:
-      - name: Check out repository code
-        uses: actions/checkout@v4
-        with:
-          path: plugin
-
-      - name: Setup PHP ${{ matrix.php }}
-        uses: shivammathur/setup-php@v2
-        with:
-          php-version: ${{ matrix.php }}
-          extensions: ${{ matrix.extensions }}
-          ini-values: max_input_vars=5000
-          coverage: none
-
-      - name: Initialise moodle-plugin-ci
-        run: |
-          composer create-project -n --no-dev --prefer-dist moodlehq/moodle-plugin-ci ci ^4
-          echo $(cd ci/bin; pwd) >> $GITHUB_PATH
-          echo $(cd ci/vendor/bin; pwd) >> $GITHUB_PATH
-          sudo locale-gen en_AU.UTF-8
-          echo "NVM_DIR=$HOME/.nvm" >> $GITHUB_ENV
-
-      - name: Install moodle-plugin-ci
-        run: moodle-plugin-ci install --plugin ./plugin --db-host=127.0.0.1
-        env:
-          DB: ${{ matrix.database }}
-          MOODLE_BRANCH: ${{ matrix.moodle-branch }}
-
-      - name: PHP Lint
-        if: ${{ !cancelled() }}
-        run: moodle-plugin-ci phplint
-
-      - name: PHP Mess Detector
-        continue-on-error: true # This step will show errors but will not fail
-        if: ${{ !cancelled() }}
-        run: moodle-plugin-ci phpmd
-
-      - name: Moodle Code Checker
-        if: ${{ !cancelled() }}
-        run: moodle-plugin-ci phpcs --max-warnings 0
-
-      - name: Moodle PHPDoc Checker
-        if: ${{ !cancelled() }}
-        run: moodle-plugin-ci phpdoc --max-warnings 0
-
-      - name: Validating
-        if: ${{ !cancelled() }}
-        run: moodle-plugin-ci validate
-
-      - name: Check upgrade savepoints
-        if: ${{ !cancelled() }}
-        run: moodle-plugin-ci savepoints
-
-      - name: Mustache Lint
-        if: ${{ !cancelled() }}
-        run: moodle-plugin-ci mustache
-
-      # Grunt runs on the MOODLE_501_STABLE cells only: the lowest supported branch,
-      # where AMD builds are made. Other branches can minify differently.
-      - name: Grunt
-        if: ${{ !cancelled() && matrix.moodle-branch == 'MOODLE_501_STABLE' }}
-        run: moodle-plugin-ci grunt --max-lint-warnings 0
-
-      - name: PHPUnit tests
-        if: ${{ !cancelled() }}
-        run: moodle-plugin-ci phpunit --fail-on-warning
-
-      - name: Mark cancelled jobs as failed.
-        if: ${{ cancelled() }}
-        run: exit 1
+  ci:
+    uses: verzog/moodle-ci-workflows/.github/workflows/moodle-plugin-ci.yml@vdiddy/more-inputs
+    with:
+      # The plugin has no Behat features.
+      behat: false
