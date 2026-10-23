@@ -16,6 +16,6 @@ permissions:
 
 jobs:
   release:
-    uses: verzog/moodle-ci-workflows/.github/workflows/release-zip.yml@vdiddy/more-inputs
+    uses: verzog/moodle-ci-workflows/.github/workflows/release-zip.yml@v1
     with:
       tag: ${{ inputs.tag }}
